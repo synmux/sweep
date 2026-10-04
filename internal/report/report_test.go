@@ -246,12 +246,15 @@ func TestJudgementsRendering(t *testing.T) {
 		"Jev decisions", "junk at ≥ 0.80",
 		"data/empty/ ✗ empty", "0.96 junk Thumbs.db",
 		"data/kept/ ● kept", "0.13 keep notes.txt",
-		"data/crowded/ not asked · kept · 40 files",
+		"1 not asked (too many files)",
 		"data/broken/ error · kept · jev: HTTP 500",
 	} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
 		}
+	}
+	if strings.Contains(got, "data/crowded/") {
+		t.Errorf("directories Jev was not asked about are left out:\n%s", got)
 	}
 }
 
@@ -268,10 +271,23 @@ func TestRenderIncludesJudgementsAndJevRow(t *testing.T) {
 		JunkThreshold: 0.8,
 	}
 	got := ansi.Strip(Render(summary, testStyles, 0))
-	for _, fragment := range []string{"Jev decisions", "1 judged by Jev", "2 directories judged · 1 empty · 1 not asked · 1 from cache", "data/a/ ✗ empty · cached"} {
+	for _, fragment := range []string{"1 judged by Jev", "2 directories judged · 1 empty · 1 not asked · 1 from cache", "with --jev-results"} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
 		}
+	}
+	if strings.Contains(got, "Jev decisions") {
+		t.Errorf("decisions are only printed with --jev-results:\n%s", got)
+	}
+
+	summary.ShowJudgements = true
+	got = ansi.Strip(Render(summary, testStyles, 0))
+	decisions, scanned := strings.Index(got, "Jev decisions"), strings.Index(got, "Scanned")
+	if decisions < 0 || decisions < scanned {
+		t.Errorf("with --jev-results, decisions must follow the summary:\n%s", got)
+	}
+	if !strings.Contains(got, "data/a/ ✗ empty · cached") || strings.Contains(got, "--jev-results") {
+		t.Errorf("unexpected output:\n%s", got)
 	}
 	plain := ansi.Strip(Render(Summary{Root: testRoot, DryRun: true, Candidates: []sweep.Candidate{candidate("a")}}, testStyles, 0))
 	if strings.Contains(plain, "Jev") {
@@ -285,5 +301,26 @@ func TestPrintableName(t *testing.T) {
 	}
 	if got := printableName("café 写真.jpg"); got != "café 写真.jpg" {
 		t.Errorf("printable characters must pass through, got %q", got)
+	}
+}
+
+func TestDecisionsFollowErrors(t *testing.T) {
+	summary := Summary{
+		Root:           testRoot,
+		DryRun:         true,
+		ScanErrors:     []error{errors.New("open /data/locked: permission denied")},
+		Judgements:     []sweep.Judgement{{Path: filepath.Join(testRoot, "a"), Empty: true}},
+		ShowJudgements: true,
+	}
+	got := ansi.Strip(Render(summary, testStyles, 0))
+	if strings.Index(got, "Jev decisions") < strings.Index(got, "Problems") {
+		t.Errorf("decisions must come after the error box:\n%s", got)
+	}
+}
+
+func TestNoHintWhenNothingWasJudged(t *testing.T) {
+	summary := Summary{Root: testRoot, Judgements: []sweep.Judgement{{Path: filepath.Join(testRoot, "x"), Skipped: "too many"}}}
+	if got := ansi.Strip(Render(summary, testStyles, 0)); strings.Contains(got, "--jev-results") {
+		t.Errorf("no hint when Jev was never asked:\n%s", got)
 	}
 }

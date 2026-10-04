@@ -40,6 +40,9 @@ type Summary struct {
 	// JunkThreshold is the probability a judged file needed to count as junk.
 	// Zero when no Judge was used.
 	JunkThreshold float64
+	// ShowJudgements appends Jev's per-file decisions after everything else
+	// (--jev-results). Otherwise a one-line hint points at the flag.
+	ShowJudgements bool
 }
 
 // FromScan builds a Summary from a finished scan. Removal is left nil.
@@ -105,14 +108,20 @@ func Render(summary Summary, styles theme.Styles, maxWidth int) string {
 	} else {
 		sections = append(sections, Tree(summary.Root, summary.Candidates, styles), "")
 	}
-	if len(summary.Judgements) > 0 {
-		sections = append(sections, Judgements(summary.Root, summary.Judgements, summary.JunkThreshold, styles), "")
-	}
 	sections = append(sections, SummaryBox(summary, styles))
 
 	allErrors := append(append([]error{}, summary.ScanErrors...), removalErrors(summary.Removal)...)
 	if len(allErrors) > 0 {
 		sections = append(sections, ErrorBox(allErrors, styles))
+	}
+
+	// Jev's decisions come last, so the main results stay short.
+	if judgedCount(summary.Judgements) > 0 {
+		if summary.ShowJudgements {
+			sections = append(sections, "", Judgements(summary.Root, summary.Judgements, summary.JunkThreshold, styles))
+		} else {
+			sections = append(sections, styles.Faint.Render("Run again with --jev-results to see each file's verdict; the answers come from the cache."))
+		}
 	}
 	return strings.Join(sections, "\n")
 }

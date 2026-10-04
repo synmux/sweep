@@ -248,7 +248,7 @@ func TestJevThresholdValidation(t *testing.T) {
 
 func TestJevDryRunShowsDecisions(t *testing.T) {
 	root := makeJevFixture(t)
-	output, err := runWithJudge(t, jevTable, nil, "-J", "-n", root)
+	output, err := runWithJudge(t, jevTable, nil, "-J", "-n", "--jev-results", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestDryRunDecisionsAreReusedByTheRealRun(t *testing.T) {
 		t.Fatalf("dry run asked %d times, want 2 (junky, precious)", askedInDryRun)
 	}
 
-	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "--jev", "--yes", root)
+	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "--jev", "--yes", "--jev-results", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestThresholdChangeStillUsesTheCache(t *testing.T) {
 	if _, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", root); err != nil {
 		t.Fatal(err)
 	}
-	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", "--jev-threshold", "0.99", root)
+	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", "--jev-threshold", "0.99", "--jev-results", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,5 +422,29 @@ func TestCacheDirectoryIsCreatedEarly(t *testing.T) {
 	}
 	if !pathExists(t, cachePath) {
 		t.Error("a successful run creates the database")
+	}
+}
+
+func TestJevResultsFlag(t *testing.T) {
+	root := makeJevFixture(t)
+	if _, err := runWithJudge(t, jevTable, nil, "--jev-results", "-n", root); err == nil || !strings.Contains(err.Error(), "only applies with --jev") {
+		t.Errorf("--jev-results without --jev: err = %v", err)
+	}
+
+	plain, err := runWithJudge(t, jevTable, nil, "-J", "-n", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plain, "Jev decisions") || !strings.Contains(plain, "--jev-results") {
+		t.Errorf("without the flag: no decisions, just the hint:\n%s", plain)
+	}
+
+	detailed, err := runWithJudge(t, jevTable, nil, "-J", "-n", "--jev-results", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions, summaryBox := strings.Index(detailed, "Jev decisions"), strings.Index(detailed, "Would remove")
+	if decisions < 0 || decisions < summaryBox {
+		t.Errorf("decisions must follow the main results:\n%s", detailed)
 	}
 }

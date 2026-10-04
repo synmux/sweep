@@ -206,17 +206,38 @@ func TestJevReviewMentionsJudgedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "thumbs", "Thumbs.db"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	testModel := startModel(t, Options{Root: root, Judge: fixedJudge(0.9)})
+	testModel := startModel(t, Options{Root: root, Judge: fixedJudge(0.9), ShowJudgements: true})
 	teatest.WaitFor(t, testModel.Output(), func(output []byte) bool {
 		return bytes.Contains(output, []byte("(1 judged by Jev)")) && bytes.Contains(output, []byte("Jev decisions"))
 	}, teatest.WithDuration(testTimeout))
 	testModel.Type("n")
 	outcome := finalOutcome(t, testModel)
 
-	if len(outcome.Summary.Judgements) != 1 || outcome.Summary.JunkThreshold != sweep.DefaultJunkThreshold {
+	if len(outcome.Summary.Judgements) != 1 || outcome.Summary.JunkThreshold != sweep.DefaultJunkThreshold || !outcome.Summary.ShowJudgements {
 		t.Errorf("summary = %+v", outcome.Summary)
 	}
 	if !exists(t, filepath.Join(root, "thumbs", "Thumbs.db")) {
 		t.Error("declining must remove nothing")
+	}
+}
+
+func TestJevReviewOmitsDecisionsByDefault(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "thumbs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "thumbs", "Thumbs.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testModel := startModel(t, Options{Root: root, Judge: fixedJudge(0.9)})
+	var seen []byte
+	teatest.WaitFor(t, testModel.Output(), func(output []byte) bool {
+		seen = append(seen, output...)
+		return bytes.Contains(seen, []byte("(y/N)"))
+	}, teatest.WithDuration(testTimeout))
+	testModel.Type("n")
+	finalOutcome(t, testModel)
+	if bytes.Contains(seen, []byte("Jev decisions")) {
+		t.Error("the review screen shows decisions only with ShowJudgements")
 	}
 }

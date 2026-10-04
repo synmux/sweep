@@ -17,6 +17,7 @@ sweep [DIRECTORY] [--dry-run] [--yes] [--jev]
 | `-J`, `--jev` | Ask TypeSafe's Jev model whether other files are junk. See [Jev](#judging-other-files-with-jev). |
 | `--jev-threshold` | Probability at or above which Jev's answer makes a file junk. Default `0.8`. |
 | `--no-cache` | With `--jev`, ask Jev afresh instead of reusing cached decisions. |
+| `--jev-results` | With `--jev`, print each file's decision after the main results. |
 | `-v`, `--version` | Print the version. |
 | `-h`, `--help` | Print help. |
 
@@ -47,10 +48,11 @@ On its own, `sweep` only treats `.DS_Store` as junk. With `--jev`, a directory a
 
 To keep calls down, `sweep` only asks about a directory when nothing else stops it being empty. It asks the deepest directories first, several at once, and never asks about a parent once a child has been kept. Directories with more than 32 files are kept without asking.
 
-`--dry-run` lists every decision: the probability for each file and whether its directory counts as empty. A real run shows the same list before asking for confirmation, and files Jev picked are marked with `*` in the tree.
+Files Jev picked are marked with `*` in the tree, and the summary counts how many directories it judged. Add `--jev-results` to also list every decision after the main results: each file's probability, junk or keep, and whether its directory counts as empty. Directories Jev wasn't asked about are counted in that list's heading rather than shown. In a real run, the same list appears on the review screen before you confirm.
 
 ```plaintext
 sweep --jev --dry-run ~/Downloads
+sweep --jev --dry-run --jev-results ~/Downloads   # same scan, answers from the cache
 sweep --jev --jev-threshold 0.9 ~/Downloads
 ```
 
@@ -58,7 +60,7 @@ sweep --jev --jev-threshold 0.9 ~/Downloads
 
 Jev's answers are kept in a local SQLite database (a single file) at `~/.cache/sweep/judgements.db` (or `$XDG_CACHE_HOME/sweep` when that is set). So `sweep --jev --dry-run DIR` followed by `sweep --jev DIR` asks Jev once, and the real run acts on exactly the answers you reviewed.
 
-Each answer is keyed to what it was based on: the directory's path, each file's name, size and modification time, the empty subdirectories, and the model and question wording. A directory with any file added, removed, resized or touched since is asked again; the rest come from the cache. Checking costs nothing beyond the scan itself, because file contents are not read. Probabilities are stored rather than verdicts, so changing `--jev-threshold` still uses the cache. Entries expire after 30 days, as the model behind `jev-latest` can change.
+The `~/.cache/sweep` directory is created at the start of every `--jev` run, before anything else happens. Each answer is keyed to what it was based on: the directory's path, each file's name, size and modification time, the empty subdirectories, and the model and question wording. A directory with any file added, removed, resized or touched since is asked again; the rest come from the cache. Checking costs nothing beyond the scan itself, because file contents are not read. Probabilities are stored rather than verdicts, so changing `--jev-threshold` still uses the cache. Entries expire after 30 days, as the model behind `jev-latest` can change.
 
 Cached decisions are marked `cached` in the output, and the summary counts them. Pass `--no-cache` to ask afresh without reading or writing the cache.
 

@@ -10,17 +10,38 @@ import (
 )
 
 // Judgements renders Jev's decision for each directory it judged: whether the
-// directory counts as empty, and each file's junk probability.
+// directory counts as empty, and each file's junk probability. Directories
+// Jev was not asked about are left out; the heading counts them.
 func Judgements(root string, judgements []sweep.Judgement, threshold float64, styles theme.Styles) string {
 	heading := styles.Prompt.Render("🤖 Jev decisions")
+	var notes []string
 	if threshold > 0 {
-		heading += styles.Faint.Render(fmt.Sprintf(" · junk at ≥ %.2f · * marks judged junk in the tree", threshold))
+		notes = append(notes, fmt.Sprintf("junk at ≥ %.2f", threshold))
+	}
+	if notAsked := len(judgements) - judgedCount(judgements); notAsked > 0 {
+		notes = append(notes, fmt.Sprintf("%d not asked (too many files)", notAsked))
+	}
+	if len(notes) > 0 {
+		heading += styles.Faint.Render(" · " + strings.Join(notes, " · "))
 	}
 	blocks := []string{heading}
 	for _, judgement := range judgements {
-		blocks = append(blocks, judgementBlock(root, judgement, styles))
+		if judgement.Skipped == "" {
+			blocks = append(blocks, judgementBlock(root, judgement, styles))
+		}
 	}
 	return strings.Join(blocks, "\n")
+}
+
+// judgedCount counts judgements where Jev was asked (answered or failed).
+func judgedCount(judgements []sweep.Judgement) int {
+	total := 0
+	for _, judgement := range judgements {
+		if judgement.Skipped == "" {
+			total++
+		}
+	}
+	return total
 }
 
 func judgementBlock(root string, judgement sweep.Judgement, styles theme.Styles) string {
@@ -28,8 +49,6 @@ func judgementBlock(root string, judgement sweep.Judgement, styles theme.Styles)
 	switch {
 	case judgement.Err != nil:
 		label += styles.Warning.Render("error") + styles.Faint.Render(" · kept · "+judgement.Err.Error())
-	case judgement.Skipped != "":
-		label += styles.Kept.Render("not asked") + styles.Faint.Render(" · kept · "+judgement.Skipped)
 	case judgement.Empty:
 		label += styles.Removed.Render("✗ empty")
 	default:

@@ -52,6 +52,9 @@ type Options struct {
 	Judge sweep.Judge
 	// JunkThreshold is passed to sweep.Options; zero means the default.
 	JunkThreshold float64
+	// ShowJudgements adds Jev's per-file decisions to the review screen and
+	// the final report (--jev-results).
+	ShowJudgements bool
 }
 
 // Outcome is what the program produced, read once it has exited.
@@ -319,6 +322,7 @@ func (model *Model) handleScanDone(msg scanDoneMsg) (tea.Model, tea.Cmd) {
 	if msg.result.Root != "" {
 		model.outcome.Summary = report.FromScan(msg.result, model.options.DryRun, msg.elapsed)
 		model.outcome.Summary.JunkThreshold = model.junkThreshold()
+		model.outcome.Summary.ShowJudgements = model.options.ShowJudgements
 	}
 
 	switch {
@@ -356,7 +360,7 @@ func (model *Model) refreshTree() {
 		return
 	}
 	content := report.Tree(model.outcome.Summary.Root, model.scanResult.Candidates, model.styles)
-	if judgements := model.scanResult.Judgements; len(judgements) > 0 {
+	if judgements := model.scanResult.Judgements; len(judgements) > 0 && model.options.ShowJudgements {
 		content += "\n\n" + report.Judgements(model.outcome.Summary.Root, judgements, model.junkThreshold(), model.styles)
 	}
 	treeLines := strings.Count(content, "\n") + 1

@@ -52,11 +52,12 @@ func IsInteractive() bool {
 }
 
 type flags struct {
-	dryRun        bool
-	assumeYes     bool
-	useJev        bool
-	junkThreshold float64
-	noCache       bool
+	dryRun         bool
+	assumeYes      bool
+	useJev         bool
+	junkThreshold  float64
+	noCache        bool
+	showJudgements bool
 	// judge is built from the environment when useJev is set.
 	judge sweep.Judge
 	// cache is open while judge answers from it; nil with --no-cache.
@@ -105,7 +106,8 @@ func NewCommand(environment Environment) *cobra.Command {
 			"or $__TYPESAFE_API_KEY, in that order.\n\n" +
 			"Jev's decisions are cached in ~/.cache/sweep, keyed to each directory's file names,\n" +
 			"sizes and modification times, so a real run after a dry run reuses them while\n" +
-			"anything changed is asked again. --no-cache always asks afresh.\n\n" +
+			"anything changed is asked again. --no-cache always asks afresh. --jev-results prints\n" +
+			"each file's decision after the main results.\n\n" +
 			"Before removing anything, sweep shows what it found and asks for confirmation.",
 		Example: "  sweep --dry-run ~/Downloads\n  sweep ~/Projects\n  sweep --jev --dry-run ~/Downloads\n" +
 			"  sweep --yes /Volumes/Backup | tee sweep.log",
@@ -137,13 +139,14 @@ func NewCommand(environment Environment) *cobra.Command {
 	command.Flags().Float64Var(&options.junkThreshold, "jev-threshold", sweep.DefaultJunkThreshold,
 		"probability (0-1] at or above which Jev's verdict makes a file junk")
 	command.Flags().BoolVar(&options.noCache, "no-cache", false, "ask Jev afresh instead of reusing cached decisions")
+	command.Flags().BoolVar(&options.showJudgements, "jev-results", false, "print Jev's per-file decisions after the main results")
 	return command
 }
 
 // prepareJudge validates the Jev flags and builds the Judge when asked for.
 func prepareJudge(command *cobra.Command, environment Environment, options *flags) error {
 	if !options.useJev {
-		for _, jevOnly := range []string{"jev-threshold", "no-cache"} {
+		for _, jevOnly := range []string{"jev-threshold", "no-cache", "jev-results"} {
 			if command.Flags().Changed(jevOnly) {
 				return fmt.Errorf("the --%s flag only applies with --jev", jevOnly)
 			}
@@ -211,11 +214,12 @@ func resolveRoot(target string) (string, error) {
 
 func runInteractive(ctx context.Context, output io.Writer, root string, options flags) error {
 	model := ui.New(ctx, ui.Options{
-		Root:          root,
-		DryRun:        options.dryRun,
-		AssumeYes:     options.assumeYes,
-		Judge:         options.judge,
-		JunkThreshold: options.junkThreshold,
+		Root:           root,
+		DryRun:         options.dryRun,
+		AssumeYes:      options.assumeYes,
+		Judge:          options.judge,
+		JunkThreshold:  options.junkThreshold,
+		ShowJudgements: options.showJudgements,
 	})
 	if _, err := tea.NewProgram(model, tea.WithContext(ctx)).Run(); err != nil {
 		if ctx.Err() != nil {
@@ -256,6 +260,7 @@ func runPlain(ctx context.Context, output io.Writer, root string, options flags)
 	summary := report.FromScan(result, options.dryRun, time.Since(started))
 	if options.judge != nil {
 		summary.JunkThreshold = options.junkThreshold
+		summary.ShowJudgements = options.showJudgements
 	}
 
 	var removeErr error
