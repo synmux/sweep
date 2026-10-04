@@ -5,6 +5,7 @@ package report
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/dustin/go-humanize"
 	"github.com/dustin/go-humanize/english"
 
@@ -34,18 +36,63 @@ type Summary struct {
 	Elapsed time.Duration
 }
 
-// Header renders the one-line title shown above everything else.
-func Header(root string, dryRun bool, styles theme.Styles) string {
-	parts := []string{styles.Badge.Render("🧹 sweep"), styles.Path.Render(root)}
-	if dryRun {
-		parts = append(parts, styles.DryRunTag.Render("DRY RUN"))
+// FromScan builds a Summary from a finished scan. Removal is left nil.
+func FromScan(result sweep.Result, dryRun bool, elapsed time.Duration) Summary {
+	return Summary{
+		Root:        result.Root,
+		DryRun:      dryRun,
+		DirsScanned: result.DirsScanned,
+		Candidates:  result.Candidates,
+		ScanErrors:  result.Errors,
+		Elapsed:     elapsed,
 	}
-	return strings.Join(parts, " ")
 }
 
-// Render builds the complete report: header, tree, summary and errors.
-func Render(summary Summary, styles theme.Styles) string {
-	sections := []string{Header(summary.Root, summary.DryRun, styles), ""}
+// Header renders the one-line title shown above everything else. When
+// maxWidth is positive, the path is shortened from the left to fit.
+func Header(root string, dryRun bool, styles theme.Styles, maxWidth int) string {
+	badge := styles.Badge.Render("🧹 sweep")
+	tag := ""
+	if dryRun {
+		tag = " " + styles.DryRunTag.Render("DRY RUN")
+	}
+	path := DisplayPath(root)
+	if maxWidth > 0 {
+		path = TruncateLeft(path, maxWidth-lipgloss.Width(badge)-lipgloss.Width(tag)-1)
+	}
+	return badge + " " + styles.Path.Render(path) + tag
+}
+
+// DisplayPath abbreviates the user's home directory to "~".
+func DisplayPath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if rest, isUnderHome := strings.CutPrefix(path, home+string(filepath.Separator)); isUnderHome {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return path
+}
+
+// TruncateLeft keeps the end of text, the informative part of a path, and
+// prefixes an ellipsis when text does not fit in width cells. A width below
+// two leaves text unchanged, since nothing useful fits.
+func TruncateLeft(text string, width int) string {
+	overflow := ansi.StringWidth(text) - width
+	if width < 2 || overflow <= 0 {
+		return text
+	}
+	return ansi.TruncateLeft(text, overflow+1, "…")
+}
+
+// Render builds the complete report: header, tree, summary and errors. When
+// maxWidth is positive the header is fitted to it.
+func Render(summary Summary, styles theme.Styles, maxWidth int) string {
+	sections := []string{Header(summary.Root, summary.DryRun, styles, maxWidth), ""}
 	if len(summary.Candidates) == 0 {
 		sections = append(sections, styles.Success.Render("✨ Nothing to sweep."), "")
 	} else {
@@ -195,12 +242,17 @@ func (current *node) candidateDescendants() int {
 	return total
 }
 
-// Tree renders the candidates as a directory tree. A removed directory hides
+// Tree renders the candidates as a directory tree under the root's name (the
+// header carries the full path). A removed directory hides
 // the empty directories beneath it behind a count, and chains of kept
 // directories with a single child are joined into one line ("a/b/c/").
 func Tree(root string, candidates []sweep.Candidate, styles theme.Styles) string {
 	trieRoot := buildTrie(root, candidates)
-	rendered := newStyledTree(styles.TreeRoot.Render(root), styles)
+	rootLabel := filepath.Base(root)
+	if rootLabel != string(filepath.Separator) {
+		rootLabel += string(filepath.Separator)
+	}
+	rendered := newStyledTree(styles.TreeRoot.Render(rootLabel), styles)
 	for _, child := range trieRoot.sortedChildren() {
 		rendered.Child(renderNode(child, styles))
 	}

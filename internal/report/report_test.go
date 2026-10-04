@@ -3,6 +3,7 @@ package report
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestTreeLayout(t *testing.T) {
 
 	got := ansi.Strip(Tree(testRoot, candidates, testStyles))
 	want := strings.Join([]string{
-		"/data",
+		"data/",
 		"├── ✗ alpha/ · .DS_Store · +1 empty inside",
 		"├── mixed/",
 		"│   ├── ✗ one/",
@@ -67,7 +68,7 @@ func TestTreeIgnoresPathsOutsideRoot(t *testing.T) {
 }
 
 func TestRenderNothingToDo(t *testing.T) {
-	got := ansi.Strip(Render(Summary{Root: testRoot, DirsScanned: 3}, testStyles))
+	got := ansi.Strip(Render(Summary{Root: testRoot, DirsScanned: 3}, testStyles, 0))
 	for _, fragment := range []string{"sweep", testRoot, "Nothing to sweep", "Scanned", "3 directories"} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
@@ -86,7 +87,7 @@ func TestRenderDryRun(t *testing.T) {
 		Candidates:  []sweep.Candidate{candidate("a", ".DS_Store"), candidate("b")},
 		Elapsed:     1500 * time.Millisecond,
 	}
-	got := ansi.Strip(Render(summary, testStyles))
+	got := ansi.Strip(Render(summary, testStyles, 0))
 	for _, fragment := range []string{"DRY RUN", "Would remove", "2 directories", ".DS_Store", "1 file", "1,234 directories", "1.5s", "✗ a/", "✗ b/"} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
@@ -110,7 +111,7 @@ func TestRenderRealRunWithProblems(t *testing.T) {
 			Errors:      []error{errors.New("remove /data/a: directory not empty")},
 		},
 	}
-	got := ansi.Strip(Render(summary, testStyles))
+	got := ansi.Strip(Render(summary, testStyles, 0))
 	for _, fragment := range []string{"Removed", "1 directory", "2 files", "Skipped", "no longer empty", "Errors", "Problems", "permission denied", "directory not empty"} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
@@ -146,7 +147,68 @@ func TestFormatDuration(t *testing.T) {
 }
 
 func TestHeader(t *testing.T) {
-	if got := ansi.Strip(Header("/x", true, testStyles)); !strings.Contains(got, "/x") || !strings.Contains(got, "DRY RUN") {
+	if got := ansi.Strip(Header("/x", true, testStyles, 0)); !strings.Contains(got, "/x") || !strings.Contains(got, "DRY RUN") {
 		t.Errorf("Header = %q", got)
+	}
+	longRoot := "/a/very/long/path/that/will/not/fit/in/a/narrow/terminal/at/all/target"
+	got := ansi.Strip(Header(longRoot, true, testStyles, 40))
+	if width := ansi.StringWidth(got); width > 40 {
+		t.Errorf("Header width = %d, want <= 40: %q", width, got)
+	}
+	if !strings.Contains(got, "…") || !strings.Contains(got, "/target") || !strings.Contains(got, "DRY RUN") {
+		t.Errorf("Header should keep the end of the path and the tag: %q", got)
+	}
+}
+
+func TestDisplayPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	testCases := map[string]string{
+		home:                             "~",
+		filepath.Join(home, "Downloads"): filepath.Join("~", "Downloads"),
+		home + "-other":                  home + "-other",
+		"/elsewhere":                     "/elsewhere",
+	}
+	for input, want := range testCases {
+		if got := DisplayPath(input); got != want {
+			t.Errorf("DisplayPath(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestTruncateLeft(t *testing.T) {
+	testCases := []struct {
+		text  string
+		width int
+		want  string
+	}{
+		{text: "/short", width: 20, want: "/short"},
+		{text: "/a/very/long/path", width: 10, want: "…long/path"},
+		{text: "/exact", width: 6, want: "/exact"},
+		{text: "/anything", width: 1, want: "/anything"},
+	}
+	for _, testCase := range testCases {
+		if got := TruncateLeft(testCase.text, testCase.width); got != testCase.want {
+			t.Errorf("TruncateLeft(%q, %d) = %q, want %q", testCase.text, testCase.width, got, testCase.want)
+		}
+	}
+}
+
+func TestTreeRootLabelForFilesystemRoot(t *testing.T) {
+	got := ansi.Strip(Tree("/", []sweep.Candidate{{Path: "/empty"}}, testStyles))
+	if !strings.HasPrefix(got, "/\n") {
+		t.Errorf("tree for / should be labelled /:\n%s", got)
+	}
+}
+
+func TestFromScan(t *testing.T) {
+	scanError := errors.New("boom")
+	result := sweep.Result{Root: testRoot, DirsScanned: 7, Candidates: []sweep.Candidate{candidate("a")}, Errors: []error{scanError}}
+	summary := FromScan(result, true, time.Second)
+	if summary.Root != testRoot || !summary.DryRun || summary.DirsScanned != 7 || len(summary.Candidates) != 1 ||
+		len(summary.ScanErrors) != 1 || summary.Elapsed != time.Second || summary.Removal != nil {
+		t.Errorf("FromScan = %+v", summary)
 	}
 }

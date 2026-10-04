@@ -119,7 +119,7 @@ func TestDeclineRemovesNothing(t *testing.T) {
 			testModel.Type(keys)
 			outcome := finalOutcome(t, testModel)
 
-			if !outcome.Cancelled || outcome.Summary.Removal != nil {
+			if !outcome.Declined || outcome.Cancelled || outcome.Summary.Removal != nil {
 				t.Errorf("outcome = %+v", outcome)
 			}
 			if !exists(t, filepath.Join(root, "empty", "nested")) {
@@ -129,20 +129,27 @@ func TestDeclineRemovesNothing(t *testing.T) {
 	}
 }
 
-func TestEscapeAndCtrlCDecline(t *testing.T) {
-	keyPresses := map[string]tea.KeyPressMsg{
-		"esc":    {Code: tea.KeyEscape},
-		"ctrl+c": {Code: 'c', Mod: tea.ModCtrl},
+func TestEscapeDeclinesAndCtrlCCancels(t *testing.T) {
+	testCases := map[string]struct {
+		keyPress      tea.KeyPressMsg
+		wantDeclined  bool
+		wantCancelled bool
+	}{
+		"esc":    {keyPress: tea.KeyPressMsg{Code: tea.KeyEscape}, wantDeclined: true},
+		"ctrl+c": {keyPress: tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}, wantCancelled: true},
 	}
-	for name, keyPress := range keyPresses {
+	for name, testCase := range testCases {
 		t.Run(name, func(t *testing.T) {
 			root := makeFixture(t)
 			testModel := startModel(t, Options{Root: root})
 			waitForPrompt(t, testModel)
-			testModel.Send(keyPress)
+			testModel.Send(testCase.keyPress)
 			outcome := finalOutcome(t, testModel)
-			if !outcome.Cancelled || !exists(t, filepath.Join(root, "junk", ".DS_Store")) {
+			if outcome.Declined != testCase.wantDeclined || outcome.Cancelled != testCase.wantCancelled {
 				t.Errorf("outcome = %+v", outcome)
+			}
+			if !exists(t, filepath.Join(root, "junk", ".DS_Store")) {
+				t.Error("nothing should be removed")
 			}
 		})
 	}
@@ -175,23 +182,5 @@ func TestBadRootReportsError(t *testing.T) {
 	outcome := finalOutcome(t, startModel(t, Options{Root: filepath.Join(t.TempDir(), "missing")}))
 	if !errors.Is(outcome.Err, fs.ErrNotExist) {
 		t.Errorf("Err = %v, want ErrNotExist", outcome.Err)
-	}
-}
-
-func TestTruncateLeft(t *testing.T) {
-	testCases := []struct {
-		text  string
-		width int
-		want  string
-	}{
-		{text: "/short", width: 20, want: "/short"},
-		{text: "/a/very/long/path", width: 10, want: "…long/path"},
-		{text: "/exact", width: 6, want: "/exact"},
-		{text: "/anything", width: 0, want: "/anything"},
-	}
-	for _, testCase := range testCases {
-		if got := truncateLeft(testCase.text, testCase.width); got != testCase.want {
-			t.Errorf("truncateLeft(%q, %d) = %q, want %q", testCase.text, testCase.width, got, testCase.want)
-		}
 	}
 }

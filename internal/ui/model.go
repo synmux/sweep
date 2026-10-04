@@ -17,7 +17,6 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/dustin/go-humanize"
 	"github.com/dustin/go-humanize/english"
 
@@ -33,8 +32,10 @@ const (
 	defaultHeight = 24
 	// maxProgressWidth caps the progress bar so it stays readable on wide terminals.
 	maxProgressWidth = 60
-	// chromeLines is the room the review screen needs around the tree.
-	chromeLines = 7
+	// chromeLines is the room the review screen needs around the tree: six
+	// lines of header, hint, prompt and help, plus two spare so the frame never
+	// fills the terminal (that scrolls it and leaves stale frames behind).
+	chromeLines = 8
 	// minTreeLines keeps the review viewport usable on tiny terminals.
 	minTreeLines = 3
 )
@@ -55,8 +56,12 @@ type Outcome struct {
 	// IsDark reports the terminal background, so the caller can print the
 	// report with matching styles.
 	IsDark bool
-	// Cancelled is true when the user stopped the run or declined removal.
+	// Width is the terminal width, so the caller can fit the report to it.
+	Width int
+	// Cancelled is true when the user interrupted the run with ctrl+c.
 	Cancelled bool
+	// Declined is true when the user answered no at the confirmation prompt.
+	Declined bool
 	// Err is a fatal error, such as the root not being a directory.
 	Err error
 }
@@ -110,7 +115,6 @@ type Model struct {
 
 	scanProgress sweep.Progress
 	scanResult   sweep.Result
-	scanElapsed  time.Duration
 
 	removedSoFar int
 	lastRemoved  string
@@ -141,6 +145,7 @@ func New(parent context.Context, options Options) *Model {
 // Outcome returns the result of the run. Call it after the program exits.
 func (model *Model) Outcome() Outcome {
 	model.outcome.IsDark = model.isDark
+	model.outcome.Width = model.width
 	return model.outcome
 }
 
@@ -280,14 +285,15 @@ func (model *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, model.keys.confirm):
 		return model.beginRemoval()
 	case key.Matches(msg, model.keys.decline):
-		return model.abort()
+		model.outcome.Declined = true
+		return model.finish()
 	}
 	var cmd tea.Cmd
 	model.viewport, cmd = model.viewport.Update(msg)
 	return model, cmd
 }
 
-// abort stops the run. With a worker running it cancels and waits for the
+// abort handles ctrl+c. With a worker running it cancels and waits for the
 // worker's final message, so partial results are reported accurately.
 func (model *Model) abort() (tea.Model, tea.Cmd) {
 	model.outcome.Cancelled = true
@@ -300,14 +306,9 @@ func (model *Model) abort() (tea.Model, tea.Cmd) {
 }
 
 func (model *Model) handleScanDone(msg scanDoneMsg) (tea.Model, tea.Cmd) {
-	model.scanResult, model.scanElapsed = msg.result, msg.elapsed
-	summary := &model.outcome.Summary
-	summary.DirsScanned = msg.result.DirsScanned
-	summary.Candidates = msg.result.Candidates
-	summary.ScanErrors = msg.result.Errors
-	summary.Elapsed = msg.elapsed
+	model.scanResult = msg.result
 	if msg.result.Root != "" {
-		summary.Root = msg.result.Root
+		model.outcome.Summary = report.FromScan(msg.result, model.options.DryRun, msg.elapsed)
 	}
 
 	switch {
@@ -358,7 +359,7 @@ func (model *Model) View() tea.View {
 		return tea.NewView("")
 	}
 
-	header := report.Header(model.outcome.Summary.Root, model.options.DryRun, model.styles)
+	header := report.Header(model.outcome.Summary.Root, model.options.DryRun, model.styles, model.width)
 	var body string
 	switch model.phase {
 	case phaseScanning:
@@ -385,7 +386,7 @@ func (model *Model) scanningView() string {
 	if found := model.scanProgress.CandidatesFound; found > 0 {
 		status += styles.Faint.Render(" · ") + styles.Removed.Render(humanize.Comma(int64(found))+" empty")
 	}
-	return status + "\n" + styles.Faint.Render("  "+truncateLeft(model.scanProgress.CurrentDir, model.width-2))
+	return status + "\n" + styles.Faint.Render("  "+report.TruncateLeft(report.DisplayPath(model.scanProgress.CurrentDir), model.width-2))
 }
 
 func (model *Model) reviewView() string {
@@ -417,15 +418,5 @@ func (model *Model) removingView() string {
 		model.progress.View(),
 		styles.Faint.Render(fmt.Sprintf("%s/%s", humanize.Comma(int64(model.removedSoFar)), humanize.Comma(int64(total)))),
 	)
-	return status + "\n" + styles.Removed.Render("  ✗ ") + styles.Faint.Render(truncateLeft(model.lastRemoved, model.width-4))
-}
-
-// truncateLeft keeps the end of text, which is the informative part of a
-// path, prefixing an ellipsis when it does not fit in width cells.
-func truncateLeft(text string, width int) string {
-	overflow := ansi.StringWidth(text) - width
-	if width <= 1 || overflow <= 0 {
-		return text
-	}
-	return ansi.TruncateLeft(text, overflow+1, "…")
+	return status + "\n" + styles.Removed.Render("  ✗ ") + styles.Faint.Render(report.TruncateLeft(report.DisplayPath(model.lastRemoved), model.width-4))
 }
