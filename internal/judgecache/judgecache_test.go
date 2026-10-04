@@ -262,3 +262,20 @@ func TestConcurrentUse(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestEnsureDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a", "b", "sweep", "judgements.db")
+	if err := EnsureDirectory(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Errorf("directory: %v, %v", info, err)
+	}
+	if err := EnsureDirectory(path); err != nil {
+		t.Errorf("an existing directory is fine: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Error("EnsureDirectory must not create the database itself")
+	}
+}

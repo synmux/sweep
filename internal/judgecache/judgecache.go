@@ -53,6 +53,15 @@ func DefaultPath() (string, error) {
 	return filepath.Join(cacheHome, "sweep", "judgements.db"), nil
 }
 
+// EnsureDirectory creates the directory that will hold the database at
+// path, private to the user, if it does not already exist.
+func EnsureDirectory(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("creating the cache directory: %w", err)
+	}
+	return nil
+}
+
 // Store is an open cache database.
 type Store struct {
 	database *sql.DB
@@ -62,8 +71,8 @@ type Store struct {
 // Open opens or creates the cache at path, creating its directory, and
 // removes entries older than MaxAge.
 func Open(ctx context.Context, path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("creating the cache directory: %w", err)
+	if err := EnsureDirectory(path); err != nil {
+		return nil, err
 	}
 	// Escape the path: a '#' or '?' in it would otherwise end the filename.
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)",

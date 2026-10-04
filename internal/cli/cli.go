@@ -153,6 +153,20 @@ func prepareJudge(command *cobra.Command, environment Environment, options *flag
 	if options.junkThreshold <= 0 || options.junkThreshold > 1 {
 		return fmt.Errorf("the --jev-threshold value must be above 0 and at most 1, not %v", options.junkThreshold)
 	}
+
+	// Create the cache directory first, before the judge or any scanning,
+	// so it exists however the rest of the run goes.
+	var cachePath string
+	if !options.noCache {
+		var err error
+		if cachePath, err = environment.CachePath(); err != nil {
+			return err
+		}
+		if err := judgecache.EnsureDirectory(cachePath); err != nil {
+			return fmt.Errorf("%w (pass --no-cache to run without it)", err)
+		}
+	}
+
 	judge, err := environment.NewJudge()
 	if err != nil {
 		return err
@@ -165,10 +179,6 @@ func prepareJudge(command *cobra.Command, environment Environment, options *flag
 	cacheable, isCacheable := judge.(judgecache.Fingerprinter)
 	if !isCacheable {
 		return errors.New("this judge cannot be cached; pass --no-cache")
-	}
-	cachePath, err := environment.CachePath()
-	if err != nil {
-		return err
 	}
 	store, err := judgecache.Open(command.Context(), cachePath)
 	if err != nil {

@@ -399,3 +399,28 @@ func TestUnopenableCacheIsAnError(t *testing.T) {
 		t.Errorf("err = %v, want a hint about --no-cache", err)
 	}
 }
+
+func TestCacheDirectoryIsCreatedEarly(t *testing.T) {
+	root := makeJevFixture(t)
+	cacheDirectory := filepath.Join(t.TempDir(), "missing", "sweep")
+	cachePath := filepath.Join(cacheDirectory, "judgements.db")
+
+	// Even when the judge cannot be built (no API key), the directory is
+	// already there: it is created before anything else.
+	if _, err := runWithJudgeAndCache(t, nil, errors.New("no API key"), cachePath, "-J", "-n", root); err == nil {
+		t.Fatal("expected the judge error")
+	}
+	if !pathExists(t, cacheDirectory) {
+		t.Fatal("the cache directory should exist before the judge is built")
+	}
+	if pathExists(t, cachePath) {
+		t.Error("the database itself is only created once the cache is opened")
+	}
+
+	if _, err := runWithJudgeAndCache(t, jevTable, nil, cachePath, "-J", "-n", root); err != nil {
+		t.Fatal(err)
+	}
+	if !pathExists(t, cachePath) {
+		t.Error("a successful run creates the database")
+	}
+}
