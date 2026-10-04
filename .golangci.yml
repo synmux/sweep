@@ -11,6 +11,8 @@ linters:
   settings:
     misspell:
       locale: UK
+      # Comments only: identifiers such as image/color cannot be anglicised.
+      mode: restricted
 formatters:
   enable:
     - gofmt
