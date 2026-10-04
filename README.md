@@ -74,11 +74,19 @@ The API key is read from the first of these that is set: `$TYPESAFE_API_KEY`, `$
 ## Building
 
 ```plaintext
-go build -o sweep .
-go install github.com/synmux/sweep@latest
+./build.sh                 # build ./sweep
+./build.sh --check         # run formatting, vet, lint and tests first
+./build.sh --install       # install into $(go env GOBIN) or $(go env GOPATH)/bin
+./build.sh --output PATH   # write the binary somewhere else
 ```
 
-Requires Go 1.27 or later.
+`build.sh` checks your Go version against `go.mod`, downloads and verifies modules, and stamps the version from `git describe`. It needs Go 1.27.1 or later; with an older Go, the Go toolchain downloads the right version unless `GOTOOLCHAIN=local` is set. `golangci-lint` is used by `--check` when installed.
+
+To install without cloning the repository:
+
+```plaintext
+go install github.com/synmux/sweep@latest
+```
 
 ## Development
 

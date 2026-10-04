@@ -4,7 +4,7 @@
 
 ## Commands
 
-Run all four before committing. All must pass.
+`./build.sh --check` runs everything below and then builds. Run it, or the four commands, before committing. All must pass.
 
 ```plaintext
 gofmt -l .                 # must print nothing

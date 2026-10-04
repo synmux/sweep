@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"runtime/debug"
+	"strings"
 
 	"charm.land/fang/v2"
 
@@ -37,7 +38,8 @@ func versionOptions() []fang.Option {
 		return options
 	}
 	for _, setting := range buildInfo.Settings {
-		if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+		// A git-describe version already names the commit; don't repeat it.
+		if setting.Key == "vcs.revision" && len(setting.Value) >= 7 && !strings.Contains(version, setting.Value[:7]) {
 			options = append(options, fang.WithCommit(setting.Value[:7]))
 		}
 	}
