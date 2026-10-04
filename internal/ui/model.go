@@ -48,6 +48,10 @@ type Options struct {
 	DryRun bool
 	// AssumeYes skips the confirmation prompt.
 	AssumeYes bool
+	// Judge, when set, decides whether files other than .DS_Store are junk.
+	Judge sweep.Judge
+	// JunkThreshold is passed to sweep.Options; zero means the default.
+	JunkThreshold float64
 }
 
 // Outcome is what the program produced, read once it has exited.
@@ -178,15 +182,20 @@ func (model *Model) Init() tea.Cmd {
 // so a busy renderer drops snapshots instead of slowing the walk.
 func (model *Model) startScan() tea.Cmd {
 	ctx, root, events := model.ctx, model.options.Root, model.events
+	scanOptions := sweep.Options{
+		Judge:         model.options.Judge,
+		JunkThreshold: model.options.JunkThreshold,
+		Progress: func(snapshot sweep.Progress) {
+			select {
+			case events <- scanProgressMsg(snapshot):
+			default:
+			}
+		},
+	}
 	return func() tea.Msg {
 		go func() {
 			started := time.Now()
-			result, err := sweep.Scan(ctx, root, func(snapshot sweep.Progress) {
-				select {
-				case events <- scanProgressMsg(snapshot):
-				default:
-				}
-			})
+			result, err := sweep.Scan(ctx, root, scanOptions)
 			// The final message is always delivered, even after cancellation,
 			// because the model waits for it before quitting.
 			events <- scanDoneMsg{result: result, err: err, elapsed: time.Since(started)}
@@ -309,6 +318,7 @@ func (model *Model) handleScanDone(msg scanDoneMsg) (tea.Model, tea.Cmd) {
 	model.scanResult = msg.result
 	if msg.result.Root != "" {
 		model.outcome.Summary = report.FromScan(msg.result, model.options.DryRun, msg.elapsed)
+		model.outcome.Summary.JunkThreshold = model.junkThreshold()
 	}
 
 	switch {
@@ -346,6 +356,9 @@ func (model *Model) refreshTree() {
 		return
 	}
 	content := report.Tree(model.outcome.Summary.Root, model.scanResult.Candidates, model.styles)
+	if judgements := model.scanResult.Judgements; len(judgements) > 0 {
+		content += "\n\n" + report.Judgements(model.outcome.Summary.Root, judgements, model.junkThreshold(), model.styles)
+	}
 	treeLines := strings.Count(content, "\n") + 1
 	model.viewport.SetWidth(model.width)
 	model.viewport.SetHeight(min(treeLines, max(minTreeLines, model.height-chromeLines)))
@@ -375,8 +388,30 @@ func (model *Model) View() tea.View {
 	return tea.NewView(header + "\n\n" + body + "\n")
 }
 
+// junkThreshold is the threshold in effect, or zero without a Judge.
+func (model *Model) junkThreshold() float64 {
+	switch {
+	case model.options.Judge == nil:
+		return 0
+	case model.options.JunkThreshold > 0:
+		return model.options.JunkThreshold
+	default:
+		return sweep.DefaultJunkThreshold
+	}
+}
+
 func (model *Model) scanningView() string {
 	styles := model.styles
+	if model.scanProgress.Phase == sweep.PhaseJudging {
+		status := fmt.Sprintf("%s %s  %s %s",
+			model.spinner.View(),
+			styles.Prompt.Render("Asking Jev"),
+			styles.Value.Render(fmt.Sprintf("%s/%s",
+				humanize.Comma(int64(model.scanProgress.DirsJudged)), humanize.Comma(int64(model.scanProgress.DirsToJudge)))),
+			styles.Faint.Render("directories at most"),
+		)
+		return status + "\n" + styles.Faint.Render("  "+report.TruncateLeft(report.DisplayPath(model.scanProgress.CurrentDir), model.width-2))
+	}
 	status := fmt.Sprintf("%s %s  %s %s",
 		model.spinner.View(),
 		styles.Prompt.Render("Scanning"),
@@ -401,7 +436,10 @@ func (model *Model) reviewView() string {
 
 	question := "Remove " + english.Plural(candidates, "empty directory", "empty directories")
 	if junk > 0 {
-		question += " and " + english.Plural(junk, ".DS_Store file", ".DS_Store files")
+		question += " and " + english.Plural(junk, "junk file", "junk files")
+		if judged := model.scanResult.JudgedFileCount(); judged > 0 {
+			question += fmt.Sprintf(" (%d judged by Jev)", judged)
+		}
 	}
 	lines = append(lines, "",
 		styles.Prompt.Render(question+"?")+" "+styles.Key.Render("(y/N)"),

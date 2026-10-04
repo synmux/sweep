@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,11 @@ type Summary struct {
 	// Removal is nil when nothing was removed (dry runs, or nothing to do).
 	Removal *sweep.RemoveResult
 	Elapsed time.Duration
+	// Judgements are the Judge's decisions; empty without --jev.
+	Judgements []sweep.Judgement
+	// JunkThreshold is the probability a judged file needed to count as junk.
+	// Zero when no Judge was used.
+	JunkThreshold float64
 }
 
 // FromScan builds a Summary from a finished scan. Removal is left nil.
@@ -45,6 +51,7 @@ func FromScan(result sweep.Result, dryRun bool, elapsed time.Duration) Summary {
 		Candidates:  result.Candidates,
 		ScanErrors:  result.Errors,
 		Elapsed:     elapsed,
+		Judgements:  result.Judgements,
 	}
 }
 
@@ -98,6 +105,9 @@ func Render(summary Summary, styles theme.Styles, maxWidth int) string {
 	} else {
 		sections = append(sections, Tree(summary.Root, summary.Candidates, styles), "")
 	}
+	if len(summary.Judgements) > 0 {
+		sections = append(sections, Judgements(summary.Root, summary.Judgements, summary.JunkThreshold, styles), "")
+	}
 	sections = append(sections, SummaryBox(summary, styles))
 
 	allErrors := append(append([]error{}, summary.ScanErrors...), removalErrors(summary.Removal)...)
@@ -114,16 +124,21 @@ func SummaryBox(summary Summary, styles theme.Styles) string {
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, styles.Label.Render(label), value))
 	}
 
-	junkCount := 0
+	junkCount, judgedCount := 0, 0
 	for _, candidate := range summary.Candidates {
 		junkCount += len(candidate.JunkFiles)
+		judgedCount += candidate.JudgedFileCount()
+	}
+	judgedNote := ""
+	if judgedCount > 0 {
+		judgedNote = styles.Faint.Render(fmt.Sprintf(" · %s judged by Jev", humanize.Comma(int64(judgedCount))))
 	}
 
 	switch {
 	case summary.Removal != nil:
 		addRow("Removed", styles.Success.Render(countOf(summary.Removal.DirsRemoved, "directory", "directories")))
 		if summary.Removal.JunkRemoved > 0 {
-			addRow(".DS_Store", styles.Value.Render(countOf(summary.Removal.JunkRemoved, "file", "files")))
+			addRow("Junk files", styles.Value.Render(countOf(summary.Removal.JunkRemoved, "file", "files"))+judgedNote)
 		}
 		if summary.Removal.Skipped > 0 {
 			addRow("Skipped", styles.Warning.Render(countOf(summary.Removal.Skipped, "directory", "directories"))+
@@ -132,7 +147,7 @@ func SummaryBox(summary Summary, styles theme.Styles) string {
 	case summary.DryRun:
 		addRow("Would remove", styles.Value.Render(countOf(len(summary.Candidates), "directory", "directories")))
 		if junkCount > 0 {
-			addRow(".DS_Store", styles.Value.Render(countOf(junkCount, "file", "files")))
+			addRow("Junk files", styles.Value.Render(countOf(junkCount, "file", "files"))+judgedNote)
 		}
 	default:
 		addRow("Removed", styles.Value.Render(countOf(0, "directory", "directories")))
@@ -140,6 +155,26 @@ func SummaryBox(summary Summary, styles theme.Styles) string {
 
 	addRow("Scanned", styles.Value.Render(countOf(summary.DirsScanned, "directory", "directories"))+
 		styles.Faint.Render(" in "+FormatDuration(summary.Elapsed)))
+
+	if len(summary.Judgements) > 0 {
+		askedCount, emptyCount, notAskedCount := 0, 0, 0
+		for _, judgement := range summary.Judgements {
+			switch {
+			case judgement.Skipped != "":
+				notAskedCount++
+			case judgement.Empty:
+				askedCount++
+				emptyCount++
+			default:
+				askedCount++
+			}
+		}
+		note := fmt.Sprintf(" judged · %s empty", humanize.Comma(int64(emptyCount)))
+		if notAskedCount > 0 {
+			note += fmt.Sprintf(" · %s not asked", humanize.Comma(int64(notAskedCount)))
+		}
+		addRow("Jev", styles.Value.Render(countOf(askedCount, "directory", "directories"))+styles.Faint.Render(note))
+	}
 
 	if errorCount := len(summary.ScanErrors) + len(removalErrors(summary.Removal)); errorCount > 0 {
 		addRow("Errors", styles.Warning.Render(humanize.Comma(int64(errorCount))))
@@ -189,7 +224,7 @@ type node struct {
 	name      string
 	children  map[string]*node
 	candidate bool
-	junkFiles []string
+	junkFiles []sweep.JunkFile
 }
 
 func newNode(name string) *node {
@@ -293,7 +328,7 @@ func candidateLabel(current *node, styles theme.Styles) string {
 	label := styles.Removed.Render("✗ " + current.name + "/")
 	var notes []string
 	if len(current.junkFiles) > 0 {
-		notes = append(notes, strings.Join(current.junkFiles, ", "))
+		notes = append(notes, junkNames(current.junkFiles))
 	}
 	if hidden := current.candidateDescendants(); hidden > 0 {
 		notes = append(notes, fmt.Sprintf("+%s empty inside", humanize.Comma(int64(hidden))))
@@ -302,4 +337,32 @@ func candidateLabel(current *node, styles theme.Styles) string {
 		label += styles.Note.Render(" · " + strings.Join(notes, " · "))
 	}
 	return label
+}
+
+// maxNamedJunkFiles caps how many junk file names a tree line lists.
+const maxNamedJunkFiles = 3
+
+// junkNames lists junk file names for a tree line, marking judged ones and
+// summarising the rest once there are too many.
+func junkNames(junkFiles []sweep.JunkFile) string {
+	var names []string
+	for index, junkFile := range junkFiles {
+		if index == maxNamedJunkFiles {
+			names = append(names, fmt.Sprintf("+%d more", len(junkFiles)-maxNamedJunkFiles))
+			break
+		}
+		name := printableName(junkFile.Name)
+		if junkFile.Judged {
+			name += "*"
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// printableName escapes control characters in a file name, such as the
+// carriage return in macOS's "Icon\r", so they cannot garble the terminal.
+func printableName(name string) string {
+	quoted := strconv.Quote(name)
+	return quoted[1 : len(quoted)-1]
 }

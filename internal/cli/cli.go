@@ -19,6 +19,7 @@ import (
 	"github.com/dustin/go-humanize/english"
 	"github.com/spf13/cobra"
 
+	"github.com/synmux/sweep/internal/jevjudge"
 	"github.com/synmux/sweep/internal/report"
 	"github.com/synmux/sweep/internal/sweep"
 	"github.com/synmux/sweep/internal/theme"
@@ -50,13 +51,40 @@ func IsInteractive() bool {
 }
 
 type flags struct {
-	dryRun    bool
-	assumeYes bool
+	dryRun        bool
+	assumeYes     bool
+	useJev        bool
+	junkThreshold float64
+	// judge is built from the environment when useJev is set.
+	judge sweep.Judge
 }
 
-// NewCommand builds the root command. interactive decides between the TUI
-// and plain output; pass IsInteractive outside tests.
-func NewCommand(interactive func() bool) *cobra.Command {
+// Environment holds what the command takes from the outside world, so tests
+// can replace it.
+type Environment struct {
+	// Interactive decides between the TUI and plain output.
+	Interactive func() bool
+	// NewJudge builds the Judge for --jev.
+	NewJudge func() (sweep.Judge, error)
+}
+
+// DefaultEnvironment uses the real terminal and Jev with the API key from
+// the environment.
+func DefaultEnvironment() Environment {
+	return Environment{
+		Interactive: IsInteractive,
+		NewJudge: func() (sweep.Judge, error) {
+			judge, err := jevjudge.NewFromEnvironment()
+			if err != nil {
+				return nil, err
+			}
+			return judge, nil
+		},
+	}
+}
+
+// NewCommand builds the root command.
+func NewCommand(environment Environment) *cobra.Command {
 	var options flags
 	command := &cobra.Command{
 		Use:   "sweep [DIRECTORY]",
@@ -64,9 +92,14 @@ func NewCommand(interactive func() bool) *cobra.Command {
 		Long: "sweep walks DIRECTORY (default: the current directory) and removes every empty\n" +
 			"directory below it. A directory holding only a .DS_Store file counts as empty, and\n" +
 			"so does one left holding only empty directories. DIRECTORY itself is never removed.\n\n" +
+			"With --jev, TypeSafe's Jev model also judges other files: a directory holding only OS\n" +
+			"junk and other useless files counts as empty. File names and sizes are sent to the\n" +
+			"TypeSafe API, never contents. The API key comes from $TYPESAFE_API_KEY, $JEV_API_KEY\n" +
+			"or $__TYPESAFE_API_KEY, in that order.\n\n" +
 			"Before removing anything, sweep shows what it found and asks for confirmation.",
-		Example: "  sweep --dry-run ~/Downloads\n  sweep ~/Projects\n  sweep --yes /Volumes/Backup | tee sweep.log",
-		Args:    cobra.MaximumNArgs(1),
+		Example: "  sweep --dry-run ~/Downloads\n  sweep ~/Projects\n  sweep --jev --dry-run ~/Downloads\n" +
+			"  sweep --yes /Volumes/Backup | tee sweep.log",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			target := "."
 			if len(args) == 1 {
@@ -76,7 +109,10 @@ func NewCommand(interactive func() bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if interactive() {
+			if err := prepareJudge(command, environment, &options); err != nil {
+				return err
+			}
+			if environment.Interactive() {
 				return runInteractive(command.Context(), command.OutOrStdout(), root, options)
 			}
 			return runPlain(command.Context(), command.OutOrStdout(), root, options)
@@ -84,7 +120,29 @@ func NewCommand(interactive func() bool) *cobra.Command {
 	}
 	command.Flags().BoolVarP(&options.dryRun, "dry-run", "n", false, "show what would be removed without removing anything")
 	command.Flags().BoolVarP(&options.assumeYes, "yes", "y", false, "remove without asking for confirmation")
+	command.Flags().BoolVarP(&options.useJev, "jev", "J", false, "ask TypeSafe Jev whether other files are junk")
+	command.Flags().Float64Var(&options.junkThreshold, "jev-threshold", sweep.DefaultJunkThreshold,
+		"probability (0-1] at or above which Jev's verdict makes a file junk")
 	return command
+}
+
+// prepareJudge validates the Jev flags and builds the Judge when asked for.
+func prepareJudge(command *cobra.Command, environment Environment, options *flags) error {
+	if !options.useJev {
+		if command.Flags().Changed("jev-threshold") {
+			return errors.New("the --jev-threshold flag only applies with --jev")
+		}
+		return nil
+	}
+	if options.junkThreshold <= 0 || options.junkThreshold > 1 {
+		return fmt.Errorf("the --jev-threshold value must be above 0 and at most 1, not %v", options.junkThreshold)
+	}
+	judge, err := environment.NewJudge()
+	if err != nil {
+		return err
+	}
+	options.judge = judge
+	return nil
 }
 
 // resolveRoot returns the absolute path of target, which must be a directory.
@@ -108,7 +166,13 @@ func resolveRoot(target string) (string, error) {
 }
 
 func runInteractive(ctx context.Context, output io.Writer, root string, options flags) error {
-	model := ui.New(ctx, ui.Options{Root: root, DryRun: options.dryRun, AssumeYes: options.assumeYes})
+	model := ui.New(ctx, ui.Options{
+		Root:          root,
+		DryRun:        options.dryRun,
+		AssumeYes:     options.assumeYes,
+		Judge:         options.judge,
+		JunkThreshold: options.junkThreshold,
+	})
 	if _, err := tea.NewProgram(model, tea.WithContext(ctx)).Run(); err != nil {
 		if ctx.Err() != nil {
 			return ErrCancelled
@@ -141,11 +205,14 @@ func runPlain(ctx context.Context, output io.Writer, root string, options flags)
 	}
 
 	started := time.Now()
-	result, err := sweep.Scan(ctx, root, nil)
+	result, err := sweep.Scan(ctx, root, sweep.Options{Judge: options.judge, JunkThreshold: options.junkThreshold})
 	if err != nil {
 		return cancelledOr(err)
 	}
 	summary := report.FromScan(result, options.dryRun, time.Since(started))
+	if options.judge != nil {
+		summary.JunkThreshold = options.junkThreshold
+	}
 
 	var removeErr error
 	if !options.dryRun && len(result.Candidates) > 0 {

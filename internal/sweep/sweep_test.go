@@ -66,7 +66,7 @@ func snapshot(t *testing.T, root string) []string {
 
 func mustScan(t *testing.T, root string) Result {
 	t.Helper()
-	result, err := Scan(context.Background(), root, nil)
+	result, err := Scan(context.Background(), root, Options{})
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -202,10 +202,10 @@ func TestScanUnreadableDirIsKeptAndReported(t *testing.T) {
 func TestScanRejectsBadRoots(t *testing.T) {
 	root := t.TempDir()
 	buildTree(t, root, "file.txt")
-	if _, err := Scan(context.Background(), filepath.Join(root, "file.txt"), nil); err == nil {
+	if _, err := Scan(context.Background(), filepath.Join(root, "file.txt"), Options{}); err == nil {
 		t.Error("scanning a file should fail")
 	}
-	if _, err := Scan(context.Background(), filepath.Join(root, "missing"), nil); !errors.Is(err, fs.ErrNotExist) {
+	if _, err := Scan(context.Background(), filepath.Join(root, "missing"), Options{}); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("scanning a missing path: err = %v, want ErrNotExist", err)
 	}
 }
@@ -214,12 +214,12 @@ func TestScanReportsProgress(t *testing.T) {
 	root := t.TempDir()
 	buildTree(t, root, "a/b/", "c/")
 	var snapshots []Progress
-	_, err := Scan(context.Background(), root, func(progress Progress) {
+	_, err := Scan(context.Background(), root, Options{Progress: func(progress Progress) {
 		if progress.DirsScanned != len(snapshots)+1 {
 			t.Errorf("DirsScanned = %d, want %d", progress.DirsScanned, len(snapshots)+1)
 		}
 		snapshots = append(snapshots, progress)
-	})
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestScanHonoursCancellation(t *testing.T) {
 	buildTree(t, root, "a/", "b/")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := Scan(ctx, root, nil); !errors.Is(err, context.Canceled) {
+	if _, err := Scan(ctx, root, Options{}); !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }

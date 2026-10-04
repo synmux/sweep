@@ -12,6 +12,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/exp/teatest/v2"
+
+	"github.com/synmux/sweep/internal/sweep"
 )
 
 const testTimeout = 5 * time.Second
@@ -182,5 +184,39 @@ func TestBadRootReportsError(t *testing.T) {
 	outcome := finalOutcome(t, startModel(t, Options{Root: filepath.Join(t.TempDir(), "missing")}))
 	if !errors.Is(outcome.Err, fs.ErrNotExist) {
 		t.Errorf("Err = %v, want ErrNotExist", outcome.Err)
+	}
+}
+
+// fixedJudge says every file is junk with the same probability.
+type fixedJudge float64
+
+func (judge fixedJudge) JunkProbabilities(_ context.Context, request sweep.JudgeRequest) ([]float64, error) {
+	probabilities := make([]float64, len(request.Files))
+	for index := range probabilities {
+		probabilities[index] = float64(judge)
+	}
+	return probabilities, nil
+}
+
+func TestJevReviewMentionsJudgedFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "thumbs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "thumbs", "Thumbs.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testModel := startModel(t, Options{Root: root, Judge: fixedJudge(0.9)})
+	teatest.WaitFor(t, testModel.Output(), func(output []byte) bool {
+		return bytes.Contains(output, []byte("(1 judged by Jev)")) && bytes.Contains(output, []byte("Jev decisions"))
+	}, teatest.WithDuration(testTimeout))
+	testModel.Type("n")
+	outcome := finalOutcome(t, testModel)
+
+	if len(outcome.Summary.Judgements) != 1 || outcome.Summary.JunkThreshold != sweep.DefaultJunkThreshold {
+		t.Errorf("summary = %+v", outcome.Summary)
+	}
+	if !exists(t, filepath.Join(root, "thumbs", "Thumbs.db")) {
+		t.Error("declining must remove nothing")
 	}
 }

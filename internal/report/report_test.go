@@ -19,7 +19,11 @@ const testRoot = "/data"
 
 var testStyles = theme.New(true)
 
-func candidate(relativePath string, junkFiles ...string) sweep.Candidate {
+func candidate(relativePath string, junkNames ...string) sweep.Candidate {
+	var junkFiles []sweep.JunkFile
+	for _, name := range junkNames {
+		junkFiles = append(junkFiles, sweep.JunkFile{Name: name})
+	}
 	return sweep.Candidate{Path: filepath.Join(testRoot, relativePath), JunkFiles: junkFiles}
 }
 
@@ -88,7 +92,7 @@ func TestRenderDryRun(t *testing.T) {
 		Elapsed:     1500 * time.Millisecond,
 	}
 	got := ansi.Strip(Render(summary, testStyles, 0))
-	for _, fragment := range []string{"DRY RUN", "Would remove", "2 directories", ".DS_Store", "1 file", "1,234 directories", "1.5s", "✗ a/", "✗ b/"} {
+	for _, fragment := range []string{"DRY RUN", "Would remove", "2 directories", "Junk files", "1 file", "1,234 directories", "1.5s", "✗ a/", "✗ b/"} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
 		}
@@ -210,5 +214,76 @@ func TestFromScan(t *testing.T) {
 	if summary.Root != testRoot || !summary.DryRun || summary.DirsScanned != 7 || len(summary.Candidates) != 1 ||
 		len(summary.ScanErrors) != 1 || summary.Elapsed != time.Second || summary.Removal != nil {
 		t.Errorf("FromScan = %+v", summary)
+	}
+}
+
+func TestJunkNamesInTree(t *testing.T) {
+	judgedCandidate := sweep.Candidate{
+		Path: filepath.Join(testRoot, "a"),
+		JunkFiles: []sweep.JunkFile{
+			{Name: ".DS_Store"}, {Name: "Thumbs.db", Judged: true}, {Name: "Icon\r", Judged: true},
+			{Name: "desktop.ini", Judged: true}, {Name: "x.tmp", Judged: true},
+		},
+	}
+	got := ansi.Strip(Tree(testRoot, []sweep.Candidate{judgedCandidate}, testStyles))
+	if !strings.Contains(got, `.DS_Store, Thumbs.db*, Icon\r*, +2 more`) {
+		t.Errorf("junk names not summarised as expected:\n%s", got)
+	}
+}
+
+func TestJudgementsRendering(t *testing.T) {
+	judgements := []sweep.Judgement{
+		{Path: filepath.Join(testRoot, "empty"), Empty: true, Files: []sweep.FileVerdict{{Name: "Thumbs.db", JunkProbability: 0.96, Junk: true}}},
+		{Path: filepath.Join(testRoot, "kept"), Files: []sweep.FileVerdict{
+			{Name: "Thumbs.db", JunkProbability: 0.95, Junk: true},
+			{Name: "notes.txt", JunkProbability: 0.13},
+		}},
+		{Path: filepath.Join(testRoot, "crowded"), Skipped: "40 files is more than the 32 sweep asks about"},
+		{Path: filepath.Join(testRoot, "broken"), Err: errors.New("jev: HTTP 500")},
+	}
+	got := ansi.Strip(Judgements(testRoot, judgements, 0.8, testStyles))
+	for _, fragment := range []string{
+		"Jev decisions", "junk at ≥ 0.80",
+		"data/empty/ ✗ empty", "0.96 junk Thumbs.db",
+		"data/kept/ ● kept", "0.13 keep notes.txt",
+		"data/crowded/ not asked · kept · 40 files",
+		"data/broken/ error · kept · jev: HTTP 500",
+	} {
+		if !strings.Contains(got, fragment) {
+			t.Errorf("missing %q in:\n%s", fragment, got)
+		}
+	}
+}
+
+func TestRenderIncludesJudgementsAndJevRow(t *testing.T) {
+	summary := Summary{
+		Root:       testRoot,
+		DryRun:     true,
+		Candidates: []sweep.Candidate{{Path: filepath.Join(testRoot, "a"), JunkFiles: []sweep.JunkFile{{Name: "Thumbs.db", Judged: true}}}},
+		Judgements: []sweep.Judgement{
+			{Path: filepath.Join(testRoot, "a"), Empty: true},
+			{Path: filepath.Join(testRoot, "b")},
+			{Path: filepath.Join(testRoot, "c"), Skipped: "too many files"},
+		},
+		JunkThreshold: 0.8,
+	}
+	got := ansi.Strip(Render(summary, testStyles, 0))
+	for _, fragment := range []string{"Jev decisions", "1 judged by Jev", "2 directories judged · 1 empty · 1 not asked"} {
+		if !strings.Contains(got, fragment) {
+			t.Errorf("missing %q in:\n%s", fragment, got)
+		}
+	}
+	plain := ansi.Strip(Render(Summary{Root: testRoot, DryRun: true, Candidates: []sweep.Candidate{candidate("a")}}, testStyles, 0))
+	if strings.Contains(plain, "Jev") {
+		t.Errorf("no Jev output without judgements:\n%s", plain)
+	}
+}
+
+func TestPrintableName(t *testing.T) {
+	if got := printableName("Icon\r"); got != `Icon\r` {
+		t.Errorf("printableName = %q", got)
+	}
+	if got := printableName("café 写真.jpg"); got != "café 写真.jpg" {
+		t.Errorf("printable characters must pass through, got %q", got)
 	}
 }

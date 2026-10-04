@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`sweep` is a Go CLI that removes empty directories below a root. A directory holding only `.DS_Store` files, or only empty directories, counts as empty. The root itself is never removed. README.md covers usage.
+`sweep` is a Go CLI that removes empty directories below a root. A directory holding only `.DS_Store` files, or only empty directories, counts as empty. With `--jev`, TypeSafe's Jev model can also judge other files junk. The root itself is never removed. README.md covers usage.
 
 ## Commands
 
@@ -10,12 +10,13 @@ Run all four before committing. All must pass.
 gofmt -l .                 # must print nothing
 go vet ./...
 golangci-lint run ./...    # config in .golangci.yml (v2 format)
-go test -race ./...
+go test -race ./...         # includes one live Jev call if an API key is set; -short skips it
 ```
 
 ## Layout and boundaries
 
-- `internal/sweep`: `Scan` (post-order walk with `os.ReadDir`) and `Remove`. No UI imports. Candidates come out children first, and `Remove` relies on that order.
+- `internal/sweep`: `Scan` walks with `os.ReadDir` into a tree of nodes, then (with a `Judge`) resolves directories holding other files level by level, deepest first, and finally collects candidates post-order. `Remove` relies on that children-first order. No UI imports.
+- `internal/jevjudge`: the `sweep.Judge` backed by `github.com/mattn/go-jev`. One Noul per file, state is the directory listing (names and sizes only). The criteria text was tuned on live answers; re-check with `go test -run TestLiveJev -v ./internal/jevjudge/` after changing it.
 - `internal/report`: rendering only (tree, summary, errors, `Header`, `DisplayPath`, `TruncateLeft`). The terminal UI and plain mode both use it.
 - `internal/theme`: every colour and style. Add new styles here, not inline.
 - `internal/ui`: the Bubble Tea v2 model, with phases scanning, review, removing and done. The done view is empty on purpose: `internal/cli` prints the final report after the program exits, so long lists land in scrollback.
@@ -25,7 +26,11 @@ go test -race ./...
 
 - Never use `os.RemoveAll`. `os.Remove` failing with ENOTEMPTY is the safety net against files that appear after the scan.
 - Never follow symlinks. The walk relies on `DirEntry.IsDir()` being false for symlinks.
-- Junk file names live in `junkFiles` in `internal/sweep/scan.go`. Add new ones there only.
+- Always-junk names live in `junkFiles` in `internal/sweep/scan.go`. Add new ones there only. Anything else is junk only when a `Judge` says so.
+- Judged files carry size and modification time; `Remove` refuses to delete them if either changed. Never drop that check.
+- A `Judge` error wrapping `sweep.ErrJudgeUnavailable` (401, 403, 422 from Jev) stops the scan. Other errors keep just that directory.
+- Never send file contents to Jev. Names, sizes and directory paths only.
+- API key lookup order is `$TYPESAFE_API_KEY`, `$JEV_API_KEY`, `$__TYPESAFE_API_KEY` (`jevjudge.APIKeyVariables`).
 - Worker goroutines in `internal/ui` must always send their final `...DoneMsg`, even after cancellation, because the model waits for it before quitting.
 - Keep the inline frame shorter than the terminal (`chromeLines` in `internal/ui/model.go`). A frame that fills the terminal scrolls it and leaves stale frames behind.
 
@@ -36,6 +41,7 @@ go test -race ./...
 ## Tests
 
 - `internal/ui` tests use `github.com/charmbracelet/x/exp/teatest/v2`.
+- Judge tests use small table-driven fakes; `internal/jevjudge` tests use `httptest` with `jev.WithURL`.
 - Filesystem tests build fixtures under `t.TempDir()`. Permission tests skip when running as root.
 - Charm v2 modules live under `charm.land/...`, not `github.com/charmbracelet/...`.
 

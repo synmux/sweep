@@ -19,7 +19,7 @@ var version string
 func main() {
 	options := append(versionOptions(), fang.WithNotifySignal(os.Interrupt))
 
-	err := fang.Execute(context.Background(), cli.NewCommand(cli.IsInteractive), options...)
+	err := fang.Execute(context.Background(), cli.NewCommand(cli.DefaultEnvironment()), options...)
 	os.Exit(cli.ExitCode(err))
 }
 

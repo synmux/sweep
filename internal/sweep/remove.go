@@ -3,6 +3,7 @@ package sweep
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -59,8 +60,18 @@ func removeOne(candidate Candidate, blockedParents map[string]struct{}, result *
 		return nil
 	}
 
-	for _, junkName := range candidate.JunkFiles {
-		err := os.Remove(filepath.Join(candidate.Path, junkName))
+	// Check every judged file before deleting anything, so a directory is
+	// either fully cleared or left exactly as it was.
+	for _, junkFile := range candidate.JunkFiles {
+		if junkFile.Judged {
+			if err := checkUnchanged(candidate.Path, junkFile); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, junkFile := range candidate.JunkFiles {
+		err := os.Remove(filepath.Join(candidate.Path, junkFile.Name))
 		switch {
 		case err == nil:
 			result.JunkRemoved++
@@ -75,5 +86,19 @@ func removeOne(candidate Candidate, blockedParents map[string]struct{}, result *
 		return err
 	}
 	result.DirsRemoved++
+	return nil
+}
+
+// checkUnchanged confirms a judged file is still the regular file, with the
+// same size and modification time, that the Judge saw.
+func checkUnchanged(dir string, junkFile JunkFile) error {
+	path := filepath.Join(dir, junkFile.Name)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != junkFile.Size || !info.ModTime().Equal(junkFile.ModTime) {
+		return fmt.Errorf("%s changed since it was judged junk, so it was kept", path)
+	}
 	return nil
 }

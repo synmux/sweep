@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/synmux/sweep/internal/sweep"
 )
 
 func makeFixture(t *testing.T) string {
@@ -30,7 +32,10 @@ func makeFixture(t *testing.T) string {
 // runPlainCommand runs the command non-interactively and returns its output.
 func runPlainCommand(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	command := NewCommand(func() bool { return false })
+	command := NewCommand(Environment{
+		Interactive: func() bool { return false },
+		NewJudge:    func() (sweep.Judge, error) { return nil, errors.New("no judge in this test") },
+	})
 	var output bytes.Buffer
 	command.SetOut(&output)
 	command.SetErr(&output)
@@ -158,5 +163,113 @@ func TestExitCode(t *testing.T) {
 		if got := ExitCode(err); got != want {
 			t.Errorf("ExitCode(%v) = %d, want %d", err, got, want)
 		}
+	}
+}
+
+// tableJudge is a sweep.Judge answering from a name-to-probability table.
+type tableJudge map[string]float64
+
+func (judge tableJudge) JunkProbabilities(_ context.Context, request sweep.JudgeRequest) ([]float64, error) {
+	probabilities := make([]float64, len(request.Files))
+	for index, file := range request.Files {
+		probabilities[index] = judge[file.Name]
+	}
+	return probabilities, nil
+}
+
+func runWithJudge(t *testing.T, judge sweep.Judge, judgeErr error, args ...string) (string, error) {
+	t.Helper()
+	command := NewCommand(Environment{
+		Interactive: func() bool { return false },
+		NewJudge:    func() (sweep.Judge, error) { return judge, judgeErr },
+	})
+	var output bytes.Buffer
+	command.SetOut(&output)
+	command.SetErr(&output)
+	command.SetArgs(args)
+	err := command.ExecuteContext(context.Background())
+	return output.String(), err
+}
+
+func makeJevFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for file, content := range map[string]string{
+		"junky/Thumbs.db":    "thumbs",
+		"junky/.DS_Store":    "ds",
+		"precious/notes.md":  "remember",
+		"precious/Thumbs.db": "thumbs",
+	} {
+		path := filepath.Join(root, file)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+var jevTable = tableJudge{"Thumbs.db": 0.96, "notes.md": 0.12}
+
+func TestJevNeedsAnAPIKey(t *testing.T) {
+	missingKey := errors.New("--jev needs an API key")
+	if _, err := runWithJudge(t, nil, missingKey, "--jev", "-n", t.TempDir()); !errors.Is(err, missingKey) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestJevThresholdValidation(t *testing.T) {
+	root := t.TempDir()
+	if _, err := runWithJudge(t, jevTable, nil, "--jev-threshold", "0.5", "-n", root); err == nil || !strings.Contains(err.Error(), "only applies with --jev") {
+		t.Errorf("threshold without --jev: err = %v", err)
+	}
+	for _, threshold := range []string{"0", "-0.1", "1.5"} {
+		if _, err := runWithJudge(t, jevTable, nil, "-J", "--jev-threshold", threshold, "-n", root); err == nil {
+			t.Errorf("threshold %s should be rejected", threshold)
+		}
+	}
+	if _, err := runWithJudge(t, jevTable, nil, "-J", "--jev-threshold", "1", "-n", root); err != nil {
+		t.Errorf("threshold 1 should be accepted: %v", err)
+	}
+}
+
+func TestJevDryRunShowsDecisions(t *testing.T) {
+	root := makeJevFixture(t)
+	output, err := runWithJudge(t, jevTable, nil, "-J", "-n", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{"Jev decisions", "junky/ ✗ empty", "0.96 junk Thumbs.db", "precious/ ● kept", "0.12 keep notes.md", "Would remove", "1 directory", "1 judged by Jev"} {
+		if !strings.Contains(output, fragment) {
+			t.Errorf("missing %q in:\n%s", fragment, output)
+		}
+	}
+	if !pathExists(t, filepath.Join(root, "junky", "Thumbs.db")) {
+		t.Error("dry run removed a judged file")
+	}
+}
+
+func TestJevYesRemovesJudgedJunkOnly(t *testing.T) {
+	root := makeJevFixture(t)
+	if _, err := runWithJudge(t, jevTable, nil, "--jev", "--yes", root); err != nil {
+		t.Fatal(err)
+	}
+	if pathExists(t, filepath.Join(root, "junky")) {
+		t.Error("junky/ should be removed with its judged junk")
+	}
+	for _, kept := range []string{"precious/notes.md", "precious/Thumbs.db"} {
+		if !pathExists(t, filepath.Join(root, kept)) {
+			t.Errorf("%s must survive: its directory was kept", kept)
+		}
+	}
+}
+
+func TestJevIsNotBuiltWithoutTheFlag(t *testing.T) {
+	root := makeJevFixture(t)
+	output, err := runWithJudge(t, nil, errors.New("must not be called"), "-n", root)
+	if err != nil || strings.Contains(output, "Jev decisions") || strings.Contains(output, "judged") {
+		t.Errorf("err = %v, output:\n%s", err, output)
 	}
 }
