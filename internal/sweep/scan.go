@@ -55,8 +55,18 @@ func (result Result) JunkFileCount() int {
 	return total
 }
 
+// Progress is a snapshot of a running scan.
+type Progress struct {
+	// DirsScanned counts directories entered so far, including the current one.
+	DirsScanned int
+	// CandidatesFound counts removable directories found so far.
+	CandidatesFound int
+	// CurrentDir is the directory being entered.
+	CurrentDir string
+}
+
 // ProgressFunc is called once per directory as the scan enters it.
-type ProgressFunc func(dirsScanned int, currentDir string)
+type ProgressFunc func(progress Progress)
 
 // Scan walks root depth-first and returns the directories that can be removed.
 // Symbolic links are never followed and count as content. It returns an error
@@ -99,7 +109,11 @@ func (walker *scanner) classify(dir string) (bool, error) {
 	}
 	walker.result.DirsScanned++
 	if walker.progress != nil {
-		walker.progress(walker.result.DirsScanned, dir)
+		walker.progress(Progress{
+			DirsScanned:     walker.result.DirsScanned,
+			CandidatesFound: len(walker.result.Candidates),
+			CurrentDir:      dir,
+		})
 	}
 
 	entries, err := os.ReadDir(dir)

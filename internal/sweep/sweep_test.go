@@ -213,18 +213,22 @@ func TestScanRejectsBadRoots(t *testing.T) {
 func TestScanReportsProgress(t *testing.T) {
 	root := t.TempDir()
 	buildTree(t, root, "a/b/", "c/")
-	var visited []string
-	_, err := Scan(context.Background(), root, func(dirsScanned int, currentDir string) {
-		if dirsScanned != len(visited)+1 {
-			t.Errorf("dirsScanned = %d, want %d", dirsScanned, len(visited)+1)
+	var snapshots []Progress
+	_, err := Scan(context.Background(), root, func(progress Progress) {
+		if progress.DirsScanned != len(snapshots)+1 {
+			t.Errorf("DirsScanned = %d, want %d", progress.DirsScanned, len(snapshots)+1)
 		}
-		visited = append(visited, currentDir)
+		snapshots = append(snapshots, progress)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(visited) != 4 {
-		t.Errorf("visited %d dirs, want 4: %q", len(visited), visited)
+	if len(snapshots) != 4 {
+		t.Fatalf("visited %d dirs, want 4: %+v", len(snapshots), snapshots)
+	}
+	// Order is root, a, a/b, c. By the time c is entered, a/b and a are found.
+	if last := snapshots[3]; filepath.Base(last.CurrentDir) != "c" || last.CandidatesFound != 2 {
+		t.Errorf("last snapshot = %+v, want c with 2 candidates found", last)
 	}
 }
 
