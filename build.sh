@@ -4,7 +4,7 @@
 #
 #   ./build.sh                 build ./sweep
 #   ./build.sh --check         run gofmt, go vet, golangci-lint and tests first
-#   ./build.sh --install       install into $(go env GOBIN) or $(go env GOPATH)/bin
+#   ./build.sh --install       install into $HOME/.local/bin ($SWEEP_INSTALL_DIR overrides)
 #   ./build.sh --output PATH   write the binary to PATH
 #
 # The version reported by `sweep --version` comes from `git describe`.
@@ -105,11 +105,20 @@ version="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 build_flags=(-trimpath -ldflags "-s -w -X main.version=$version")
 
 if $install_binary; then
-	step "Installing sweep $version"
-	CGO_ENABLED=0 go install "${build_flags[@]}" .
-	install_directory="$(go env GOBIN)"
-	[[ -n "$install_directory" ]] || install_directory="$(go env GOPATH)/bin"
+	install_directory="${SWEEP_INSTALL_DIR:-$HOME/.local/bin}"
+	step "Installing sweep $version into $install_directory"
+	mkdir -p "$install_directory"
+	CGO_ENABLED=0 go build "${build_flags[@]}" -o "$install_directory/sweep" .
 	built_binary="$install_directory/sweep"
+	case ":$PATH:" in
+	*":$install_directory:"*)
+		resolved="$(command -v sweep || true)"
+		if [[ -n "$resolved" && "$resolved" != "$built_binary" ]]; then
+			printf '    %swarning: %s comes earlier on PATH and will run instead%s\n' "$red" "$resolved" "$reset"
+		fi
+		;;
+	*) printf '    %swarning: %s is not on PATH; add it to run sweep by name%s\n' "$red" "$install_directory" "$reset" ;;
+	esac
 else
 	step "Building sweep $version"
 	CGO_ENABLED=0 go build "${build_flags[@]}" -o "$output_path" .

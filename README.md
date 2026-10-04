@@ -76,7 +76,7 @@ The API key is read from the first of these that is set: `$TYPESAFE_API_KEY`, `$
 ```plaintext
 ./build.sh                 # build ./sweep
 ./build.sh --check         # run formatting, vet, lint and tests first
-./build.sh --install       # install into $(go env GOBIN) or $(go env GOPATH)/bin
+./build.sh --install       # install into ~/.local/bin ($SWEEP_INSTALL_DIR overrides)
 ./build.sh --output PATH   # write the binary somewhere else
 ```
 
