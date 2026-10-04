@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattn/go-jev"
 
@@ -113,12 +114,12 @@ func TestJunkProbabilitiesParsesAnswers(t *testing.T) {
 	judge, bodies := fakeServer(t, func(map[string]any) (int, string) {
 		return http.StatusOK, `{"model":"jev-1.13.0","answers":{"file_0":{"type":"noul","noul":0.96},"file_1":{"type":"noul","noul":0.13}},"usage":{"input_tokens":1,"output_tokens":1}}`
 	})
-	probabilities, err := judge.JunkProbabilities(context.Background(), sampleRequest)
+	answer, err := judge.JunkProbabilities(context.Background(), sampleRequest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(probabilities, []float64{0.96, 0.13}) {
-		t.Errorf("probabilities = %v", probabilities)
+	if !slices.Equal(answer.Probabilities, []float64{0.96, 0.13}) || answer.Cached {
+		t.Errorf("answer = %+v", answer)
 	}
 	body := (*bodies)[0]
 	if body["model"] != jev.DefaultModel {
@@ -167,9 +168,9 @@ func TestJunkProbabilitiesClassifiesHTTPErrors(t *testing.T) {
 
 func TestJunkProbabilitiesWithNoFilesMakesNoRequest(t *testing.T) {
 	judge, bodies := fakeServer(t, func(map[string]any) (int, string) { return http.StatusOK, `{}` })
-	probabilities, err := judge.JunkProbabilities(context.Background(), sweep.JudgeRequest{Directory: "x"})
-	if err != nil || len(probabilities) != 0 || len(*bodies) != 0 {
-		t.Errorf("probabilities %v, err %v, requests %d", probabilities, err, len(*bodies))
+	answer, err := judge.JunkProbabilities(context.Background(), sweep.JudgeRequest{Directory: "x"})
+	if err != nil || len(answer.Probabilities) != 0 || len(*bodies) != 0 {
+		t.Errorf("answer %+v, err %v, requests %d", answer, err, len(*bodies))
 	}
 }
 
@@ -193,10 +194,11 @@ func TestLiveJev(t *testing.T) {
 			{Name: ".gitkeep", Size: 0},
 		},
 	}
-	probabilities, err := New(apiKey).JunkProbabilities(context.Background(), request)
+	answer, err := New(apiKey).JunkProbabilities(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
+	probabilities := answer.Probabilities
 	for index, file := range request.Files {
 		wantJunk := index < 2
 		isJunk := probabilities[index] >= sweep.DefaultJunkThreshold
@@ -204,5 +206,33 @@ func TestLiveJev(t *testing.T) {
 		if isJunk != wantJunk {
 			t.Errorf("%s: probability %.2f, want junk = %v", file.Name, probabilities[index], wantJunk)
 		}
+	}
+}
+
+func TestRequestNeverSendsCacheOnlyFields(t *testing.T) {
+	request := sampleRequest
+	request.Path = "/Users/someone/secret/photos/raw"
+	request.Files = []sweep.FileInfo{{Name: "Thumbs.db", Size: 1, ModTime: time.Date(2026, 1, 2, 3, 4, 5, 6, time.UTC)}}
+	judge, bodies := fakeServer(t, func(map[string]any) (int, string) {
+		return http.StatusOK, `{"answers":{"file_0":{"type":"noul","noul":0.9}}}`
+	})
+	if _, err := judge.JunkProbabilities(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal((*bodies)[0])
+	for _, leaked := range []string{"/Users/someone", "2026"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Errorf("request body leaks %q: %s", leaked, encoded)
+		}
+	}
+}
+
+func TestFingerprintIsStable(t *testing.T) {
+	first, second := New("key-one").Fingerprint(), New("key-two").Fingerprint()
+	if first == "" || first != second {
+		t.Errorf("fingerprints %q and %q must match and not depend on the key", first, second)
+	}
+	if other := New("key", jev.WithModel("jev-other")).Fingerprint(); other == first {
+		t.Error("a different model must change the fingerprint")
 	}
 }

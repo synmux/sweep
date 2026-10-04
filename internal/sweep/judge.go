@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -32,10 +33,15 @@ var ErrJudgeUnavailable = errors.New("judge unavailable")
 type FileInfo struct {
 	Name string
 	Size int64
+	// ModTime is for cache keys only; judges must not send it anywhere.
+	ModTime time.Time
 }
 
 // JudgeRequest asks about the files in one directory.
 type JudgeRequest struct {
+	// Path is the directory's absolute path. Like FileInfo.ModTime, it is for
+	// cache keys only.
+	Path string
 	// Directory is the directory's path relative to the scan root, starting
 	// with the root's own name, using forward slashes.
 	Directory string
@@ -45,12 +51,19 @@ type JudgeRequest struct {
 	EmptySubdirectories []string
 }
 
-// Judge decides whether files are junk.
-type Judge interface {
-	// JunkProbabilities returns, for each of request.Files in order, the
+// JudgeAnswer is a Judge's reply for one directory.
+type JudgeAnswer struct {
+	// Probabilities holds, for each of the request's files in order, the
 	// probability that the file is junk that can be deleted without losing
 	// anything a person would want.
-	JunkProbabilities(ctx context.Context, request JudgeRequest) ([]float64, error)
+	Probabilities []float64
+	// Cached is true when the answer came from a cache, not a fresh call.
+	Cached bool
+}
+
+// Judge decides whether files are junk.
+type Judge interface {
+	JunkProbabilities(ctx context.Context, request JudgeRequest) (JudgeAnswer, error)
 }
 
 // FileVerdict is the Judge's answer for one file.
@@ -71,6 +84,8 @@ type Judgement struct {
 	Files []FileVerdict
 	// Empty is true when every file was judged junk.
 	Empty bool
+	// Cached is true when the Judge answered from its cache.
+	Cached bool
 	// Skipped explains why the Judge was not asked, such as too many files.
 	Skipped string
 	// Err is set when the Judge failed for this directory, which is kept.
@@ -182,7 +197,8 @@ func (judging *judgingState) judgeLevel(pending []*dirNode, threshold float64, c
 // and ErrJudgeUnavailable are returned; other failures keep the directory.
 func (judging *judgingState) judgeNode(ctx context.Context, node *dirNode, threshold float64) error {
 	request := judging.walker.buildRequest(node)
-	probabilities, err := judging.walker.options.Judge.JunkProbabilities(ctx, request)
+	answer, err := judging.walker.options.Judge.JunkProbabilities(ctx, request)
+	probabilities := answer.Probabilities
 	if err == nil && len(probabilities) != len(request.Files) {
 		err = fmt.Errorf("judge returned %d answers for %d files", len(probabilities), len(request.Files))
 	}
@@ -198,7 +214,7 @@ func (judging *judgingState) judgeNode(ctx context.Context, node *dirNode, thres
 		return nil
 	}
 
-	judgement := Judgement{Path: node.path, Empty: true}
+	judgement := Judgement{Path: node.path, Empty: true, Cached: answer.Cached}
 	var judgedJunk []JunkFile
 	for index, file := range node.otherFiles {
 		isJunk := probabilities[index] >= threshold
@@ -234,10 +250,11 @@ func (walker *scanner) buildRequest(node *dirNode) JudgeRequest {
 		relativePath = node.path
 	}
 	request := JudgeRequest{
+		Path:      node.path,
 		Directory: filepath.ToSlash(filepath.Join(filepath.Base(walker.result.Root), relativePath)),
 	}
 	for _, file := range node.otherFiles {
-		request.Files = append(request.Files, FileInfo{Name: file.Name, Size: file.Size})
+		request.Files = append(request.Files, FileInfo{Name: file.Name, Size: file.Size, ModTime: file.ModTime})
 	}
 	for _, child := range node.children {
 		request.EmptySubdirectories = append(request.EmptySubdirectories, filepath.Base(child.path))

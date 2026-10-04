@@ -24,6 +24,8 @@ type fakeJudge struct {
 	// answerCountDelta adds or removes answers to simulate a broken judge.
 	answerCountDelta int
 	delay            time.Duration
+	// cached marks every answer as coming from a cache.
+	cached bool
 
 	mutex    sync.Mutex
 	requests []JudgeRequest
@@ -31,7 +33,7 @@ type fakeJudge struct {
 	peak     atomic.Int32
 }
 
-func (judge *fakeJudge) JunkProbabilities(_ context.Context, request JudgeRequest) ([]float64, error) {
+func (judge *fakeJudge) JunkProbabilities(_ context.Context, request JudgeRequest) (JudgeAnswer, error) {
 	current := judge.inFlight.Add(1)
 	defer judge.inFlight.Add(-1)
 	for {
@@ -47,7 +49,7 @@ func (judge *fakeJudge) JunkProbabilities(_ context.Context, request JudgeReques
 	judge.mutex.Unlock()
 
 	if judge.failDirectory != "" && strings.HasSuffix(request.Directory, judge.failDirectory) {
-		return nil, judge.failWith
+		return JudgeAnswer{}, judge.failWith
 	}
 	answers := make([]float64, 0, len(request.Files))
 	for _, file := range request.Files {
@@ -59,7 +61,7 @@ func (judge *fakeJudge) JunkProbabilities(_ context.Context, request JudgeReques
 	for range judge.answerCountDelta {
 		answers = append(answers, 1)
 	}
-	return answers, nil
+	return JudgeAnswer{Probabilities: answers, Cached: judge.cached}, nil
 }
 
 func (judge *fakeJudge) requestedDirectories() []string {
@@ -184,9 +186,18 @@ func TestJudgeRequestContents(t *testing.T) {
 	if want := filepath.Base(root) + "/outer/inner"; request.Directory != want {
 		t.Errorf("Directory = %q, want %q", request.Directory, want)
 	}
-	wantFiles := []FileInfo{{Name: "Thumbs.db", Size: int64(len("outer/inner/Thumbs.db"))}}
-	if !slices.Equal(request.Files, wantFiles) {
-		t.Errorf("Files = %+v, want %+v (.DS_Store is never sent)", request.Files, wantFiles)
+	if len(request.Files) != 1 || request.Files[0].Name != "Thumbs.db" || request.Files[0].Size != int64(len("outer/inner/Thumbs.db")) {
+		t.Errorf("Files = %+v, want only Thumbs.db (.DS_Store is never sent)", request.Files)
+	}
+	info, err := os.Stat(filepath.Join(root, "outer", "inner", "Thumbs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.Files[0].ModTime.Equal(info.ModTime()) {
+		t.Errorf("ModTime = %v, want %v", request.Files[0].ModTime, info.ModTime())
+	}
+	if want := filepath.Join(root, "outer", "inner"); request.Path != want {
+		t.Errorf("Path = %q, want %q", request.Path, want)
 	}
 	if !slices.Equal(request.EmptySubdirectories, []string{"empty"}) {
 		t.Errorf("EmptySubdirectories = %q", request.EmptySubdirectories)
@@ -327,5 +338,14 @@ func TestRemoveKeepsJudgedFilesThatChanged(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(root, kept)); err != nil {
 			t.Errorf("%s must be untouched: %v", kept, err)
 		}
+	}
+}
+
+func TestCachedAnswersAreMarked(t *testing.T) {
+	root := t.TempDir()
+	buildTree(t, root, "a/Thumbs.db")
+	result := scanWithJudge(t, root, &fakeJudge{probabilities: junkTable, cached: true}, 0)
+	if len(result.Judgements) != 1 || !result.Judgements[0].Cached {
+		t.Errorf("judgements = %+v", result.Judgements)
 	}
 }

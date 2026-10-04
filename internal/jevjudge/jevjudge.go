@@ -6,6 +6,9 @@ package jevjudge
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -47,6 +50,14 @@ var questionCriteria = map[string]string{
 		"that exist to keep a directory, such as .gitkeep or .keep.",
 }
 
+// instructionsTemplate is the per-file question; %d is the file's index.
+const instructionsTemplate = "Is `files[%d]` junk that can be deleted without losing anything a person would want to keep?"
+
+// promptVersion changes whenever the state layout changes, so that cached
+// answers to the old prompt are not reused. The template and criteria are
+// hashed directly.
+const promptVersion = 1
+
 // State is the JSON state sent for one directory.
 type State struct {
 	Directory           string      `json:"directory"`
@@ -73,7 +84,7 @@ func BuildEvaluation(request sweep.JudgeRequest) (State, map[string]jev.Question
 		state.Files = append(state.Files, StateFile{Name: file.Name, SizeBytes: file.Size})
 		questions[questionID(index)] = jev.Question{
 			Type:         "noul",
-			Instructions: fmt.Sprintf("Is `files[%d]` junk that can be deleted without losing anything a person would want to keep?", index),
+			Instructions: fmt.Sprintf(instructionsTemplate, index),
 			Criteria:     questionCriteria,
 		}
 	}
@@ -92,13 +103,15 @@ type evaluator interface {
 // Judge asks Jev whether files are junk.
 type Judge struct {
 	client evaluator
+	model  string
 }
 
 // New returns a Judge using apiKey. Extra options go to jev.NewClient, for
 // example jev.WithURL in tests.
 func New(apiKey string, options ...jev.ClientOption) *Judge {
 	options = append([]jev.ClientOption{jev.WithAPIKey(apiKey)}, options...)
-	return &Judge{client: jev.NewClient(options...)}
+	client := jev.NewClient(options...)
+	return &Judge{client: client, model: client.Model()}
 }
 
 // NewFromEnvironment returns a Judge with the key from APIKeyFromEnvironment.
@@ -110,29 +123,39 @@ func NewFromEnvironment() (*Judge, error) {
 	return New(apiKey), nil
 }
 
+// Fingerprint identifies everything that shapes this Judge's answers apart
+// from the request: the model and the question wording. Cached answers are
+// only reused under the same fingerprint.
+func (judge *Judge) Fingerprint() string {
+	criteria, _ := json.Marshal(questionCriteria) // map keys marshal sorted, so this is stable
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "jev\x00%d\x00%s\x00%s\x00%s", promptVersion, judge.model, instructionsTemplate, criteria) // hash writes never fail
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 // JunkProbabilities implements sweep.Judge with one request per directory.
-func (judge *Judge) JunkProbabilities(ctx context.Context, request sweep.JudgeRequest) ([]float64, error) {
+func (judge *Judge) JunkProbabilities(ctx context.Context, request sweep.JudgeRequest) (sweep.JudgeAnswer, error) {
 	if len(request.Files) == 0 {
-		return nil, nil
+		return sweep.JudgeAnswer{}, nil
 	}
 	state, questions := BuildEvaluation(request)
 	response, err := judge.client.Evaluate(ctx, state, questions)
 	if err != nil {
-		return nil, classify(err)
+		return sweep.JudgeAnswer{}, classify(err)
 	}
 
 	probabilities := make([]float64, len(request.Files))
 	for index := range request.Files {
 		answer := response.Answers[questionID(index)]
 		if answer == nil {
-			return nil, fmt.Errorf("jev returned no answer for %s", request.Files[index].Name)
+			return sweep.JudgeAnswer{}, fmt.Errorf("jev returned no answer for %s", request.Files[index].Name)
 		}
 		if answer.Noul < 0 || answer.Noul > 1 {
-			return nil, fmt.Errorf("jev returned probability %v for %s", answer.Noul, request.Files[index].Name)
+			return sweep.JudgeAnswer{}, fmt.Errorf("jev returned probability %v for %s", answer.Noul, request.Files[index].Name)
 		}
 		probabilities[index] = answer.Noul
 	}
-	return probabilities, nil
+	return sweep.JudgeAnswer{Probabilities: probabilities}, nil
 }
 
 // classify marks errors that will hit every request (bad key, no access, a

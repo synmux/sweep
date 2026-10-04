@@ -16,6 +16,7 @@ sweep [DIRECTORY] [--dry-run] [--yes] [--jev]
 | `-y`, `--yes` | Remove without the confirmation prompt. |
 | `-J`, `--jev` | Ask TypeSafe's Jev model whether other files are junk. See [Jev](#judging-other-files-with-jev). |
 | `--jev-threshold` | Probability at or above which Jev's answer makes a file junk. Default `0.8`. |
+| `--no-cache` | With `--jev`, ask Jev afresh instead of reusing cached decisions. |
 | `-v`, `--version` | Print the version. |
 | `-h`, `--help` | Print help. |
 
@@ -53,7 +54,15 @@ sweep --jev --dry-run ~/Downloads
 sweep --jev --jev-threshold 0.9 ~/Downloads
 ```
 
-The API key is read from the first of these that is set: `$TYPESAFE_API_KEY`, `$JEV_API_KEY`, `$__TYPESAFE_API_KEY`. A rejected key stops the run before anything is removed. Answers near the threshold can change from run to run, so check the dry run before a real one.
+### Cached decisions
+
+Jev's answers are kept in a local SQLite database (a single file) at `~/.cache/sweep/judgements.db` (or `$XDG_CACHE_HOME/sweep` when that is set). So `sweep --jev --dry-run DIR` followed by `sweep --jev DIR` asks Jev once, and the real run acts on exactly the answers you reviewed.
+
+Each answer is keyed to what it was based on: the directory's path, each file's name, size and modification time, the empty subdirectories, and the model and question wording. A directory with any file added, removed, resized or touched since is asked again; the rest come from the cache. Checking costs nothing beyond the scan itself, because file contents are not read. Probabilities are stored rather than verdicts, so changing `--jev-threshold` still uses the cache. Entries expire after 30 days, as the model behind `jev-latest` can change.
+
+Cached decisions are marked `cached` in the output, and the summary counts them. Pass `--no-cache` to ask afresh without reading or writing the cache.
+
+The API key is read from the first of these that is set: `$TYPESAFE_API_KEY`, `$JEV_API_KEY`, `$__TYPESAFE_API_KEY`. A rejected key stops the run before anything is removed. Answers near the threshold can change between fresh calls, so check the dry run before a real one; the cache then keeps the real run consistent with it.
 
 ## Safety
 
@@ -105,6 +114,7 @@ Layout:
 | `internal/cli` | Flags, terminal detection, plain mode, exit codes |
 | `internal/sweep` | Scanning, judging and removal. No UI code. |
 | `internal/jevjudge` | The Jev-backed judge and API key lookup |
+| `internal/judgecache` | SQLite cache of Jev decisions |
 | `internal/report` | Tree, summary and error boxes |
 | `internal/theme` | Light and dark styles from Charm's charmtone palette |
 | `internal/ui` | Bubble Tea model |

@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/synmux/sweep/internal/sweep"
 )
@@ -35,6 +37,7 @@ func runPlainCommand(t *testing.T, args ...string) (string, error) {
 	command := NewCommand(Environment{
 		Interactive: func() bool { return false },
 		NewJudge:    func() (sweep.Judge, error) { return nil, errors.New("no judge in this test") },
+		CachePath:   func() (string, error) { return "", errors.New("no cache in this test") },
 	})
 	var output bytes.Buffer
 	command.SetOut(&output)
@@ -169,19 +172,27 @@ func TestExitCode(t *testing.T) {
 // tableJudge is a sweep.Judge answering from a name-to-probability table.
 type tableJudge map[string]float64
 
-func (judge tableJudge) JunkProbabilities(_ context.Context, request sweep.JudgeRequest) ([]float64, error) {
+func (judge tableJudge) JunkProbabilities(_ context.Context, request sweep.JudgeRequest) (sweep.JudgeAnswer, error) {
 	probabilities := make([]float64, len(request.Files))
 	for index, file := range request.Files {
 		probabilities[index] = judge[file.Name]
 	}
-	return probabilities, nil
+	return sweep.JudgeAnswer{Probabilities: probabilities}, nil
 }
 
+func (tableJudge) Fingerprint() string { return "table" }
+
 func runWithJudge(t *testing.T, judge sweep.Judge, judgeErr error, args ...string) (string, error) {
+	t.Helper()
+	return runWithJudgeAndCache(t, judge, judgeErr, filepath.Join(t.TempDir(), "cache", "judgements.db"), args...)
+}
+
+func runWithJudgeAndCache(t *testing.T, judge sweep.Judge, judgeErr error, cachePath string, args ...string) (string, error) {
 	t.Helper()
 	command := NewCommand(Environment{
 		Interactive: func() bool { return false },
 		NewJudge:    func() (sweep.Judge, error) { return judge, judgeErr },
+		CachePath:   func() (string, error) { return cachePath, nil },
 	})
 	var output bytes.Buffer
 	command.SetOut(&output)
@@ -271,5 +282,120 @@ func TestJevIsNotBuiltWithoutTheFlag(t *testing.T) {
 	output, err := runWithJudge(t, nil, errors.New("must not be called"), "-n", root)
 	if err != nil || strings.Contains(output, "Jev decisions") || strings.Contains(output, "judged") {
 		t.Errorf("err = %v, output:\n%s", err, output)
+	}
+}
+
+// countingTableJudge is a tableJudge that counts directories asked about.
+type countingTableJudge struct {
+	tableJudge
+	calls atomic.Int32
+}
+
+func (judge *countingTableJudge) JunkProbabilities(ctx context.Context, request sweep.JudgeRequest) (sweep.JudgeAnswer, error) {
+	judge.calls.Add(1)
+	return judge.tableJudge.JunkProbabilities(ctx, request)
+}
+
+func TestDryRunDecisionsAreReusedByTheRealRun(t *testing.T) {
+	root := makeJevFixture(t)
+	cachePath := filepath.Join(t.TempDir(), "cache", "judgements.db")
+	judge := &countingTableJudge{tableJudge: jevTable}
+
+	if _, err := runWithJudgeAndCache(t, judge, nil, cachePath, "--jev", "--dry-run", root); err != nil {
+		t.Fatal(err)
+	}
+	askedInDryRun := judge.calls.Load()
+	if askedInDryRun != 2 {
+		t.Fatalf("dry run asked %d times, want 2 (junky, precious)", askedInDryRun)
+	}
+
+	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "--jev", "--yes", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := judge.calls.Load(); calls != askedInDryRun {
+		t.Errorf("the real run asked again: %d calls in total", calls)
+	}
+	if !strings.Contains(output, "2 from cache") || !strings.Contains(output, "· cached") {
+		t.Errorf("cache hits not reported:\n%s", output)
+	}
+	if pathExists(t, filepath.Join(root, "junky")) {
+		t.Error("the cached decision should still remove junky/")
+	}
+}
+
+func TestChangedDirectoryIsAskedAgain(t *testing.T) {
+	root := makeJevFixture(t)
+	cachePath := filepath.Join(t.TempDir(), "cache", "judgements.db")
+	judge := &countingTableJudge{tableJudge: jevTable}
+	if _, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", root); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewrite one file with a new modification time; only its directory changes.
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(root, "precious", "notes.md"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := judge.calls.Load(); calls != 3 {
+		t.Errorf("calls = %d, want 3: only precious/ is asked again", calls)
+	}
+	if !strings.Contains(output, "1 from cache") {
+		t.Errorf("want exactly one cache hit:\n%s", output)
+	}
+}
+
+func TestThresholdChangeStillUsesTheCache(t *testing.T) {
+	root := makeJevFixture(t)
+	cachePath := filepath.Join(t.TempDir(), "cache", "judgements.db")
+	judge := &countingTableJudge{tableJudge: jevTable}
+	if _, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", root); err != nil {
+		t.Fatal(err)
+	}
+	output, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", "--jev-threshold", "0.99", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if judge.calls.Load() != 2 {
+		t.Errorf("calls = %d, want 2: probabilities are cached, not verdicts", judge.calls.Load())
+	}
+	if !strings.Contains(output, "junky/ ● kept") {
+		t.Errorf("at 0.99, Thumbs.db (0.96) is no longer junk:\n%s", output)
+	}
+}
+
+func TestNoCacheAsksAfreshAndWritesNothing(t *testing.T) {
+	root := makeJevFixture(t)
+	cachePath := filepath.Join(t.TempDir(), "cache", "judgements.db")
+	judge := &countingTableJudge{tableJudge: jevTable}
+	for range 2 {
+		if _, err := runWithJudgeAndCache(t, judge, nil, cachePath, "-J", "-n", "--no-cache", root); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if judge.calls.Load() != 4 {
+		t.Errorf("calls = %d, want 4", judge.calls.Load())
+	}
+	if pathExists(t, cachePath) {
+		t.Error("--no-cache must not create the cache")
+	}
+	if _, err := runWithJudge(t, jevTable, nil, "--no-cache", "-n", root); err == nil || !strings.Contains(err.Error(), "only applies with --jev") {
+		t.Errorf("--no-cache without --jev: err = %v", err)
+	}
+}
+
+func TestUnopenableCacheIsAnError(t *testing.T) {
+	root := makeJevFixture(t)
+	blocker := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runWithJudgeAndCache(t, jevTable, nil, filepath.Join(blocker, "judgements.db"), "-J", "-n", root)
+	if err == nil || !strings.Contains(err.Error(), "--no-cache") {
+		t.Errorf("err = %v, want a hint about --no-cache", err)
 	}
 }

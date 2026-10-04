@@ -190,12 +190,12 @@ func TestBadRootReportsError(t *testing.T) {
 // fixedJudge says every file is junk with the same probability.
 type fixedJudge float64
 
-func (judge fixedJudge) JunkProbabilities(_ context.Context, request sweep.JudgeRequest) ([]float64, error) {
+func (judge fixedJudge) JunkProbabilities(_ context.Context, request sweep.JudgeRequest) (sweep.JudgeAnswer, error) {
 	probabilities := make([]float64, len(request.Files))
 	for index := range probabilities {
 		probabilities[index] = float64(judge)
 	}
-	return probabilities, nil
+	return sweep.JudgeAnswer{Probabilities: probabilities}, nil
 }
 
 func TestJevReviewMentionsJudgedFiles(t *testing.T) {

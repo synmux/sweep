@@ -35,6 +35,9 @@ func judgementBlock(root string, judgement sweep.Judgement, styles theme.Styles)
 	default:
 		label += styles.Success.Render("● kept")
 	}
+	if judgement.Cached {
+		label += styles.Faint.Render(" · cached")
+	}
 
 	block := newStyledTree(label, styles)
 	for _, file := range judgement.Files {

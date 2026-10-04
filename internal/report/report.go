@@ -157,8 +157,11 @@ func SummaryBox(summary Summary, styles theme.Styles) string {
 		styles.Faint.Render(" in "+FormatDuration(summary.Elapsed)))
 
 	if len(summary.Judgements) > 0 {
-		askedCount, emptyCount, notAskedCount := 0, 0, 0
+		askedCount, emptyCount, notAskedCount, cachedCount := 0, 0, 0, 0
 		for _, judgement := range summary.Judgements {
+			if judgement.Cached {
+				cachedCount++
+			}
 			switch {
 			case judgement.Skipped != "":
 				notAskedCount++
@@ -172,6 +175,9 @@ func SummaryBox(summary Summary, styles theme.Styles) string {
 		note := fmt.Sprintf(" judged · %s empty", humanize.Comma(int64(emptyCount)))
 		if notAskedCount > 0 {
 			note += fmt.Sprintf(" · %s not asked", humanize.Comma(int64(notAskedCount)))
+		}
+		if cachedCount > 0 {
+			note += fmt.Sprintf(" · %s from cache", humanize.Comma(int64(cachedCount)))
 		}
 		addRow("Jev", styles.Value.Render(countOf(askedCount, "directory", "directories"))+styles.Faint.Render(note))
 	}

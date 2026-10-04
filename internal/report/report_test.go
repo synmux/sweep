@@ -261,14 +261,14 @@ func TestRenderIncludesJudgementsAndJevRow(t *testing.T) {
 		DryRun:     true,
 		Candidates: []sweep.Candidate{{Path: filepath.Join(testRoot, "a"), JunkFiles: []sweep.JunkFile{{Name: "Thumbs.db", Judged: true}}}},
 		Judgements: []sweep.Judgement{
-			{Path: filepath.Join(testRoot, "a"), Empty: true},
+			{Path: filepath.Join(testRoot, "a"), Empty: true, Cached: true},
 			{Path: filepath.Join(testRoot, "b")},
 			{Path: filepath.Join(testRoot, "c"), Skipped: "too many files"},
 		},
 		JunkThreshold: 0.8,
 	}
 	got := ansi.Strip(Render(summary, testStyles, 0))
-	for _, fragment := range []string{"Jev decisions", "1 judged by Jev", "2 directories judged · 1 empty · 1 not asked"} {
+	for _, fragment := range []string{"Jev decisions", "1 judged by Jev", "2 directories judged · 1 empty · 1 not asked · 1 from cache", "data/a/ ✗ empty · cached"} {
 		if !strings.Contains(got, fragment) {
 			t.Errorf("missing %q in:\n%s", fragment, got)
 		}

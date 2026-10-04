@@ -16,6 +16,7 @@ go test -race ./...         # includes one live Jev call if an API key is set; -
 ## Layout and boundaries
 
 - `internal/sweep`: `Scan` walks with `os.ReadDir` into a tree of nodes, then (with a `Judge`) resolves directories holding other files level by level, deepest first, and finally collects candidates post-order. `Remove` relies on that children-first order. No UI imports.
+- `internal/judgecache`: SQLite (`modernc.org/sqlite`, pure Go, so `CGO_ENABLED=0` builds keep working) cache that wraps any `sweep.Judge` with a `Fingerprint()`. Keys hash the request's absolute path, relative directory, file names, sizes and mtimes, empty subdirectories and the judge fingerprint. Stores probabilities, not verdicts. Entries expire after 30 days.
 - `internal/jevjudge`: the `sweep.Judge` backed by `github.com/mattn/go-jev`. One Noul per file, state is the directory listing (names and sizes only). The criteria text was tuned on live answers; re-check with `go test -run TestLiveJev -v ./internal/jevjudge/` after changing it.
 - `internal/report`: rendering only (tree, summary, errors, `Header`, `DisplayPath`, `TruncateLeft`). The terminal UI and plain mode both use it.
 - `internal/theme`: every colour and style. Add new styles here, not inline.
@@ -29,7 +30,8 @@ go test -race ./...         # includes one live Jev call if an API key is set; -
 - Always-junk names live in `junkFiles` in `internal/sweep/scan.go`. Add new ones there only. Anything else is junk only when a `Judge` says so.
 - Judged files carry size and modification time; `Remove` refuses to delete them if either changed. Never drop that check.
 - A `Judge` error wrapping `sweep.ErrJudgeUnavailable` (401, 403, 422 from Jev) stops the scan. Other errors keep just that directory.
-- Never send file contents to Jev. Names, sizes and directory paths only.
+- Never send file contents to Jev. Names, sizes and the relative directory only. `JudgeRequest.Path` and `FileInfo.ModTime` exist for cache keys and must never reach the API (`TestRequestNeverSendsCacheOnlyFields`).
+- Changing the Jev prompt's state layout means bumping `promptVersion` in `internal/jevjudge`; the instructions template and criteria are hashed into the fingerprint automatically. Changing the cache key layout means bumping `keyVersion` in `internal/judgecache`.
 - API key lookup order is `$TYPESAFE_API_KEY`, `$JEV_API_KEY`, `$__TYPESAFE_API_KEY` (`jevjudge.APIKeyVariables`).
 - Worker goroutines in `internal/ui` must always send their final `...DoneMsg`, even after cancellation, because the model waits for it before quitting.
 - Keep the inline frame shorter than the terminal (`chromeLines` in `internal/ui/model.go`). A frame that fills the terminal scrolls it and leaves stale frames behind.

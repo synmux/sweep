@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/synmux/sweep/internal/jevjudge"
+	"github.com/synmux/sweep/internal/judgecache"
 	"github.com/synmux/sweep/internal/report"
 	"github.com/synmux/sweep/internal/sweep"
 	"github.com/synmux/sweep/internal/theme"
@@ -55,8 +56,11 @@ type flags struct {
 	assumeYes     bool
 	useJev        bool
 	junkThreshold float64
+	noCache       bool
 	// judge is built from the environment when useJev is set.
 	judge sweep.Judge
+	// cache is open while judge answers from it; nil with --no-cache.
+	cache *judgecache.Store
 }
 
 // Environment holds what the command takes from the outside world, so tests
@@ -66,6 +70,8 @@ type Environment struct {
 	Interactive func() bool
 	// NewJudge builds the Judge for --jev.
 	NewJudge func() (sweep.Judge, error)
+	// CachePath locates the decision cache database.
+	CachePath func() (string, error)
 }
 
 // DefaultEnvironment uses the real terminal and Jev with the API key from
@@ -80,6 +86,7 @@ func DefaultEnvironment() Environment {
 			}
 			return judge, nil
 		},
+		CachePath: judgecache.DefaultPath,
 	}
 }
 
@@ -96,6 +103,9 @@ func NewCommand(environment Environment) *cobra.Command {
 			"junk and other useless files counts as empty. File names and sizes are sent to the\n" +
 			"TypeSafe API, never contents. The API key comes from $TYPESAFE_API_KEY, $JEV_API_KEY\n" +
 			"or $__TYPESAFE_API_KEY, in that order.\n\n" +
+			"Jev's decisions are cached in ~/.cache/sweep, keyed to each directory's file names,\n" +
+			"sizes and modification times, so a real run after a dry run reuses them while\n" +
+			"anything changed is asked again. --no-cache always asks afresh.\n\n" +
 			"Before removing anything, sweep shows what it found and asks for confirmation.",
 		Example: "  sweep --dry-run ~/Downloads\n  sweep ~/Projects\n  sweep --jev --dry-run ~/Downloads\n" +
 			"  sweep --yes /Volumes/Backup | tee sweep.log",
@@ -112,6 +122,9 @@ func NewCommand(environment Environment) *cobra.Command {
 			if err := prepareJudge(command, environment, &options); err != nil {
 				return err
 			}
+			if options.cache != nil {
+				defer func() { _ = options.cache.Close() }()
+			}
 			if environment.Interactive() {
 				return runInteractive(command.Context(), command.OutOrStdout(), root, options)
 			}
@@ -123,14 +136,17 @@ func NewCommand(environment Environment) *cobra.Command {
 	command.Flags().BoolVarP(&options.useJev, "jev", "J", false, "ask TypeSafe Jev whether other files are junk")
 	command.Flags().Float64Var(&options.junkThreshold, "jev-threshold", sweep.DefaultJunkThreshold,
 		"probability (0-1] at or above which Jev's verdict makes a file junk")
+	command.Flags().BoolVar(&options.noCache, "no-cache", false, "ask Jev afresh instead of reusing cached decisions")
 	return command
 }
 
 // prepareJudge validates the Jev flags and builds the Judge when asked for.
 func prepareJudge(command *cobra.Command, environment Environment, options *flags) error {
 	if !options.useJev {
-		if command.Flags().Changed("jev-threshold") {
-			return errors.New("the --jev-threshold flag only applies with --jev")
+		for _, jevOnly := range []string{"jev-threshold", "no-cache"} {
+			if command.Flags().Changed(jevOnly) {
+				return fmt.Errorf("the --%s flag only applies with --jev", jevOnly)
+			}
 		}
 		return nil
 	}
@@ -142,6 +158,24 @@ func prepareJudge(command *cobra.Command, environment Environment, options *flag
 		return err
 	}
 	options.judge = judge
+	if options.noCache {
+		return nil
+	}
+
+	cacheable, isCacheable := judge.(judgecache.Fingerprinter)
+	if !isCacheable {
+		return errors.New("this judge cannot be cached; pass --no-cache")
+	}
+	cachePath, err := environment.CachePath()
+	if err != nil {
+		return err
+	}
+	store, err := judgecache.Open(command.Context(), cachePath)
+	if err != nil {
+		return fmt.Errorf("%w (pass --no-cache to run without it)", err)
+	}
+	options.cache = store
+	options.judge = judgecache.Wrap(cacheable, store)
 	return nil
 }
 
