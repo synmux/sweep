@@ -4,12 +4,12 @@ go 1.27.1
 
 require (
 	charm.land/bubbles/v2 v2.2.1
-	charm.land/bubbletea/v2 v2.1.0
+	charm.land/bubbletea/v2 v2.1.1
 	charm.land/fang/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/charmbracelet/x/ansi v0.11.9
-	github.com/charmbracelet/x/exp/charmtone v0.1.0
-	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20261025003702-835ad0048169
+	github.com/charmbracelet/x/exp/charmtone v0.1.1
+	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20261028143050-ac49f62f807e
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/dustin/go-humanize v1.1.0
 	github.com/mattn/go-jev v0.0.3
