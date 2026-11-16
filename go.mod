@@ -14,8 +14,8 @@ require (
 	github.com/dustin/go-humanize v1.1.0
 	github.com/mattn/go-jev v0.0.3
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sync v0.24.0
-	modernc.org/sqlite v1.61.0
+	golang.org/x/sync v0.25.0
+	modernc.org/sqlite v1.61.1
 )
 
 require (
